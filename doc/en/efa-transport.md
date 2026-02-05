@@ -40,12 +40,14 @@ sudo apt-get install -y \
     pybind11-dev \
     python3-dev
 
-# Install yalantinglibs
+# Install yalantinglibs (required)
+cd /tmp
 git clone https://github.com/alibaba/yalantinglibs.git
 cd yalantinglibs
 mkdir build && cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
-make -j$(nproc) && sudo make install
+make -j$(nproc)
+sudo make install
 ```
 
 ## Building Mooncake with EFA Support
@@ -55,6 +57,7 @@ make -j$(nproc) && sudo make install
 ```bash
 git clone https://github.com/whn09/Mooncake.git
 cd Mooncake
+git submodule update --init --recursive
 ```
 
 ### 2. Build with EFA Enabled
@@ -66,6 +69,7 @@ cmake .. \
     -DUSE_EFA=ON \
     -DWITH_TE=ON \
     -DWITH_STORE=ON \
+    -DBUILD_UNIT_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
 make -j$(nproc)
