@@ -91,6 +91,7 @@ class EfaContext {
     int preTouchMemory(void *addr, size_t length);
     uint64_t rkey(void *addr);
     uint64_t lkey(void *addr);
+    void *mrDesc(void *addr);  // Get MR descriptor for fi_write local_desc
 
    private:
     int registerMemoryRegionInternal(void *addr, size_t length, int access,
@@ -114,6 +115,18 @@ class EfaContext {
 
     // Submit slices for transfer
     int submitPostSend(const std::vector<Transport::Slice *> &slice_list);
+
+    // Poll completion queue for completed operations
+    int pollCq(int max_entries, int cq_index = 0);
+
+    // Get CQ count
+    size_t cqCount() const { return cq_list_.size(); }
+
+    // Get CQ outstanding count pointer
+    volatile int *cqOutstandingCount(int cq_index) {
+        if (cq_index < 0 || (size_t)cq_index >= cq_list_.size()) return nullptr;
+        return &cq_list_[cq_index]->outstanding;
+    }
 
    public:
     // Device name, such as `rdmap0s2`

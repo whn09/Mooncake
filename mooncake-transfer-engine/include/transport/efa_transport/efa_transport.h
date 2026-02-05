@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -114,6 +115,8 @@ class EfaTransport : public Transport {
 
     const std::string &local_server_name() const { return local_server_name_; }
 
+    std::shared_ptr<TransferMetadata> meta() { return metadata_; }
+
    private:
     int initializeEfaResources();
 
@@ -127,8 +130,18 @@ class EfaTransport : public Transport {
                             int &device_id, int retry_cnt = 0);
 
    private:
+    // Start/stop CQ polling worker threads
+    void startWorkerThreads();
+    void stopWorkerThreads();
+    void workerThreadFunc(int thread_id);
+
+   private:
     std::vector<std::shared_ptr<EfaContext>> context_list_;
     std::shared_ptr<Topology> local_topology_;
+
+    // CQ polling worker threads
+    std::atomic<bool> worker_running_{false};
+    std::vector<std::thread> worker_threads_;
 };
 
 }  // namespace mooncake

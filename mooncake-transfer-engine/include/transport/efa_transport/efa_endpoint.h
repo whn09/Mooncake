@@ -37,6 +37,13 @@ namespace mooncake {
 
 class EfaContext;
 
+// Custom context for libfabric operations - stores slice pointer for completion handling
+// This struct MUST have fi_context as its first member
+struct EfaOpContext {
+    struct fi_context fi_ctx;   // Must be first member
+    Transport::Slice *slice;    // Slice pointer for completion handling
+};
+
 // EfaEndPoint represents a libfabric endpoint for EFA communication.
 // Unlike RDMA QPs, EFA uses RDM (Reliable Datagram) endpoints with
 // an address vector for peer addressing.

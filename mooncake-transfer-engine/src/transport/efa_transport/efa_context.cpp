@@ -322,6 +322,20 @@ uint64_t EfaContext::lkey(void *addr) {
     return 0;
 }
 
+void *EfaContext::mrDesc(void *addr) {
+    RWSpinlock::ReadGuard guard(mr_lock_);
+    // Find the MR that contains this address
+    for (auto &entry : mr_map_) {
+        if ((uint64_t)addr >= entry.first &&
+            (uint64_t)addr < entry.first + entry.second.length) {
+            if (entry.second.mr) {
+                return fi_mr_desc(entry.second.mr);
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::shared_ptr<EfaEndPoint> EfaContext::endpoint(const std::string &peer_nic_path) {
     if (!endpoint_store_) return nullptr;
 
@@ -380,13 +394,119 @@ std::string EfaContext::localAddr() const {
 
 int EfaContext::submitPostSend(const std::vector<Transport::Slice *> &slice_list) {
     // Route slices to appropriate endpoints for sending
+    // Group slices by peer NIC path
+    std::unordered_map<std::string, std::vector<Transport::Slice *>> slices_by_peer;
+    std::vector<Transport::Slice *> failed_slices;
+
     for (auto *slice : slice_list) {
-        if (slice) {
-            // For now, mark as success - actual implementation would
-            // route to the appropriate endpoint based on target address
-            slice->markSuccess();
+        if (!slice) continue;
+
+        // Get peer segment descriptor to find dest_rkey and peer device info
+        auto peer_segment_desc = engine_.meta()->getSegmentDescByID(slice->target_id);
+        if (!peer_segment_desc) {
+            LOG(ERROR) << "Cannot get segment descriptor for target " << slice->target_id;
+            slice->markFailed();
+            continue;
+        }
+
+        // Find the buffer and device for this destination address
+        int buffer_id = -1, device_id = -1;
+        if (EfaTransport::selectDevice(peer_segment_desc.get(),
+                                       slice->rdma.dest_addr, slice->length,
+                                       buffer_id, device_id)) {
+            LOG(ERROR) << "Cannot select device for dest_addr " << (void*)slice->rdma.dest_addr;
+            slice->markFailed();
+            continue;
+        }
+
+        // Set the remote key from the peer's registered memory region
+        slice->rdma.dest_rkey = peer_segment_desc->buffers[buffer_id].rkey[device_id];
+
+        // Construct peer NIC path: "server_name@device_name"
+        std::string peer_nic_path = peer_segment_desc->name + "@" +
+                                    peer_segment_desc->devices[device_id].name;
+        slice->peer_nic_path = peer_nic_path;
+
+        slices_by_peer[peer_nic_path].push_back(slice);
+    }
+
+    // Now send to each peer endpoint
+    for (auto &entry : slices_by_peer) {
+        const std::string &peer_nic_path = entry.first;
+        auto &peer_slices = entry.second;
+
+        // Get or create endpoint for this peer
+        auto ep = endpoint(peer_nic_path);
+        if (!ep) {
+            LOG(ERROR) << "Cannot create endpoint for peer " << peer_nic_path;
+            for (auto *slice : peer_slices) {
+                slice->markFailed();
+            }
+            continue;
+        }
+
+        // Submit to endpoint
+        std::vector<Transport::Slice *> failed_slice_list;
+        ep->submitPostSend(peer_slices, failed_slice_list);
+
+        // Handle any slices that failed to post
+        for (auto *slice : failed_slice_list) {
+            slice->markFailed();
         }
     }
+
+    return 0;
+}
+
+int EfaContext::pollCq(int max_entries, int cq_index) {
+    if (cq_index < 0 || (size_t)cq_index >= cq_list_.size()) {
+        return 0;
+    }
+
+    struct fid_cq *cq = cq_list_[cq_index]->cq;
+    if (!cq) return 0;
+
+    // Use fi_cq_data format for completions
+    struct fi_cq_data_entry entries[64];
+    int to_poll = std::min(max_entries, 64);
+
+    ssize_t ret = fi_cq_read(cq, entries, to_poll);
+
+    if (ret > 0) {
+        // Process completions
+        for (ssize_t i = 0; i < ret; i++) {
+            // The context pointer points to our EfaOpContext
+            EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(entries[i].op_context);
+            if (op_ctx && op_ctx->slice) {
+                // Mark the slice as successful
+                LOG(INFO) << "EFA CQ completion: slice=" << op_ctx->slice->source_addr
+                          << " len=" << op_ctx->slice->length;
+                op_ctx->slice->markSuccess();
+                delete op_ctx;  // Free the operation context
+            }
+        }
+        return static_cast<int>(ret);
+    } else if (ret == -FI_EAGAIN) {
+        // No completions available
+        return 0;
+    } else if (ret < 0) {
+        // Error - check for CQ error
+        struct fi_cq_err_entry err_entry;
+        ret = fi_cq_readerr(cq, &err_entry, 0);
+        if (ret > 0) {
+            EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(err_entry.op_context);
+            if (op_ctx && op_ctx->slice) {
+                LOG(ERROR) << "EFA CQ error: " << fi_cq_strerror(cq, err_entry.prov_errno,
+                                                                  err_entry.err_data, nullptr, 0)
+                           << " for slice at " << op_ctx->slice->source_addr;
+                op_ctx->slice->markFailed();
+                delete op_ctx;
+            }
+            return 1;  // Processed one error entry
+        }
+        return 0;
+    }
+
     return 0;
 }
 

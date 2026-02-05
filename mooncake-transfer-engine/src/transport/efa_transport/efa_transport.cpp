@@ -41,9 +41,62 @@ EfaTransport::EfaTransport() {
 }
 
 EfaTransport::~EfaTransport() {
+    stopWorkerThreads();
     metadata_->removeSegmentDesc(local_server_name_);
     batch_desc_set_.clear();
     context_list_.clear();
+}
+
+void EfaTransport::startWorkerThreads() {
+    if (worker_running_) return;
+
+    worker_running_ = true;
+    // Start one worker thread per context
+    size_t num_threads = std::min(context_list_.size(), (size_t)4);
+    for (size_t i = 0; i < num_threads; i++) {
+        worker_threads_.emplace_back(&EfaTransport::workerThreadFunc, this, i);
+    }
+    LOG(INFO) << "EfaTransport: Started " << num_threads << " CQ polling worker threads";
+}
+
+void EfaTransport::stopWorkerThreads() {
+    if (!worker_running_) return;
+
+    worker_running_ = false;
+    for (auto &thread : worker_threads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    worker_threads_.clear();
+    LOG(INFO) << "EfaTransport: Stopped CQ polling worker threads";
+}
+
+void EfaTransport::workerThreadFunc(int thread_id) {
+    const int kPollBatchSize = 64;
+
+    while (worker_running_) {
+        bool did_work = false;
+
+        // Poll CQs from all contexts
+        for (size_t ctx_idx = thread_id; ctx_idx < context_list_.size();
+             ctx_idx += worker_threads_.size()) {
+            auto &context = context_list_[ctx_idx];
+            if (!context || !context->active()) continue;
+
+            for (size_t cq_idx = 0; cq_idx < context->cqCount(); cq_idx++) {
+                int completed = context->pollCq(kPollBatchSize, cq_idx);
+                if (completed > 0) {
+                    did_work = true;
+                }
+            }
+        }
+
+        // If no work was done, yield CPU briefly
+        if (!did_work) {
+            std::this_thread::yield();
+        }
+    }
 }
 
 int EfaTransport::install(std::string &local_server_name,
@@ -82,6 +135,9 @@ int EfaTransport::install(std::string &local_server_name,
         LOG(ERROR) << "EfaTransport: cannot publish segments";
         return ret;
     }
+
+    // Start CQ polling worker threads
+    startWorkerThreads();
 
     return 0;
 }

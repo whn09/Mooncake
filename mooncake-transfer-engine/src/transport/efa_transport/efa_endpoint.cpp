@@ -214,7 +214,8 @@ int EfaEndPoint::setupConnectionsByActive() {
     }
 
     status_.store(CONNECTED, std::memory_order_release);
-    LOG(INFO) << "EFA connection established: " << toString();
+    LOG(INFO) << "EFA connection established: " << toString()
+              << " peer_fi_addr=" << peer_fi_addr_;
     return 0;
 }
 
@@ -303,17 +304,24 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
         }
     }
 
-    // Process slices - for now using fi_write for RDMA write operations
+    // Process slices - using fi_write for RDMA write operations
     for (auto it = slice_list.begin(); it != slice_list.end();) {
         Transport::Slice *slice = *it;
 
         // Get memory region descriptor for the local buffer
-        void *local_desc = nullptr;
-        // In a full implementation, we'd look up the MR descriptor
+        void *local_desc = context_.mrDesc(slice->source_addr);
+        if (!local_desc) {
+            LOG(ERROR) << "No MR descriptor found for address " << slice->source_addr;
+            failed_slice_list.push_back(slice);
+            it = slice_list.erase(it);
+            continue;
+        }
 
-        // Post RDMA write using the rdma union member
-        struct fi_context ctx;
-        memset(&ctx, 0, sizeof(ctx));
+        // Allocate operation context to track the slice for completion
+        // Note: This memory is freed after CQ completion in pollCq
+        EfaOpContext *op_ctx = new EfaOpContext();
+        memset(op_ctx, 0, sizeof(EfaOpContext));
+        op_ctx->slice = slice;
 
         ssize_t ret = fi_write(ep_,
                                (void*)slice->source_addr,  // local buffer
@@ -322,19 +330,31 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
                                peer_fi_addr_,
                                slice->rdma.dest_addr,  // remote address
                                slice->rdma.dest_rkey,  // remote key
-                               &ctx);
+                               &op_ctx->fi_ctx);       // context for completion
 
         if (ret == 0) {
-            // Successfully posted
+            // Successfully posted - do NOT mark success here!
+            // Success is marked only after CQ completion in pollCq
             wr_depth_++;
-            slice->markSuccess();
+            slice->status = Transport::Slice::PENDING;  // Still pending until CQ completion
+            LOG(INFO) << "EFA fi_write posted: src=" << slice->source_addr
+                      << " len=" << slice->length
+                      << " dest=" << (void*)slice->rdma.dest_addr
+                      << " rkey=" << slice->rdma.dest_rkey
+                      << " peer_addr=" << peer_fi_addr_;
             it = slice_list.erase(it);
         } else if (ret == -FI_EAGAIN) {
             // Queue full, try again later
+            delete op_ctx;  // Free context since we didn't post
             ++it;
         } else {
             // Error
-            LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret);
+            LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret)
+                       << " (source=" << slice->source_addr
+                       << ", len=" << slice->length
+                       << ", dest=" << (void*)slice->rdma.dest_addr
+                       << ", rkey=" << slice->rdma.dest_rkey << ")";
+            delete op_ctx;  // Free context since we didn't post
             failed_slice_list.push_back(slice);
             it = slice_list.erase(it);
         }
