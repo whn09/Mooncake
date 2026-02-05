@@ -164,7 +164,8 @@ int TransferMetadata::encodeSegmentDesc(const SegmentDesc &desc,
     segmentJSON["timestamp"] = getCurrentDateTime();
 
     if (segmentJSON["protocol"] == "rdma" ||
-        segmentJSON["protocol"] == "barex") {
+        segmentJSON["protocol"] == "barex" ||
+        segmentJSON["protocol"] == "efa") {
         Json::Value devicesJSON(Json::arrayValue);
         for (const auto &device : desc.devices) {
             Json::Value deviceJSON;
@@ -325,7 +326,8 @@ TransferMetadata::decodeSegmentDesc(Json::Value &segmentJSON,
     if (segmentJSON.isMember("timestamp"))
         desc->timestamp = segmentJSON["timestamp"].asString();
 
-    if (desc->protocol == "rdma" || desc->protocol == "barex") {
+    if (desc->protocol == "rdma" || desc->protocol == "barex" ||
+        desc->protocol == "efa") {
         for (const auto &deviceJSON : segmentJSON["devices"]) {
             DeviceDesc device;
             device.name = deviceJSON["name"].asString();
