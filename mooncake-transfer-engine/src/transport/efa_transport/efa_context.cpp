@@ -479,8 +479,6 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(entries[i].op_context);
             if (op_ctx && op_ctx->slice) {
                 // Mark the slice as successful
-                LOG(INFO) << "EFA CQ completion: slice=" << op_ctx->slice->source_addr
-                          << " len=" << op_ctx->slice->length;
                 op_ctx->slice->markSuccess();
                 delete op_ctx;  // Free the operation context
             }

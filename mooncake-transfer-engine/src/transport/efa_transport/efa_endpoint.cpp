@@ -341,11 +341,6 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
             // Success is marked only after CQ completion in pollCq
             wr_depth_++;
             slice->status = Transport::Slice::PENDING;  // Still pending until CQ completion
-            LOG(INFO) << "EFA fi_write posted: src=" << slice->source_addr
-                      << " len=" << slice->length
-                      << " dest=" << (void*)slice->rdma.dest_addr
-                      << " rkey=" << slice->rdma.dest_rkey
-                      << " peer_addr=" << peer_fi_addr_;
             it = slice_list.erase(it);
         } else if (ret == -FI_EAGAIN) {
             // Queue full, try again later
