@@ -62,6 +62,7 @@ struct TransferHandshakeUtil {
         for (const auto &qp : desc.qp_num) qpNums.append(qp);
         root["qp_num"] = qpNums;
         root["reply_msg"] = desc.reply_msg;
+        root["efa_addr"] = desc.efa_addr;  // EFA endpoint address
         return root;
     }
 
@@ -74,6 +75,7 @@ struct TransferHandshakeUtil {
         for (const auto &qp : root["qp_num"])
             desc.qp_num.push_back(qp.asUInt());
         desc.reply_msg = root["reply_msg"].asString();
+        desc.efa_addr = root["efa_addr"].asString();  // EFA endpoint address
         return 0;
     }
 };

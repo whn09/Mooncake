@@ -188,9 +188,8 @@ int EfaEndPoint::setupConnectionsByActive() {
     TransferMetadata::HandShakeDesc local_desc, peer_desc;
     local_desc.local_nic_path = context_.nicPath();
     local_desc.peer_nic_path = peer_nic_path_;
-    // Store our endpoint address in the handshake (using qp_num field for compatibility)
-    // We'll encode the address as a hex string in reply_msg for now
-    local_desc.reply_msg = getLocalAddr();
+    // Store our EFA endpoint address in efa_addr field (hex encoded)
+    local_desc.efa_addr = getLocalAddr();
 
     auto peer_server_name = getServerNameFromNicPath(peer_nic_path_);
     auto peer_nic_name = getNicNameFromNicPath(peer_nic_path_);
@@ -202,13 +201,13 @@ int EfaEndPoint::setupConnectionsByActive() {
     int rc = context_.engine().sendHandshake(peer_server_name, local_desc, peer_desc);
     if (rc) return rc;
 
-    if (peer_desc.reply_msg.empty()) {
+    if (peer_desc.efa_addr.empty()) {
         LOG(ERROR) << "Peer did not provide EFA address in handshake";
         return ERR_REJECT_HANDSHAKE;
     }
 
     // Insert peer's address into our AV
-    rc = insertPeerAddr(peer_desc.reply_msg);
+    rc = insertPeerAddr(peer_desc.efa_addr);
     if (rc != 0) {
         return rc;
     }
@@ -229,28 +228,33 @@ int EfaEndPoint::setupConnectionsByPassive(const HandShakeDesc &peer_desc,
 
     if (peer_desc.peer_nic_path != context_.nicPath() ||
         peer_desc.local_nic_path != peer_nic_path_) {
-        local_desc.reply_msg = "";
-        LOG(ERROR) << "Invalid argument: peer EFA nic path inconsistency";
+        local_desc.reply_msg = "EFA nic path inconsistency";
+        LOG(ERROR) << "Invalid argument: peer EFA nic path inconsistency"
+                   << " peer_nic_path=" << peer_desc.peer_nic_path
+                   << " context_.nicPath()=" << context_.nicPath()
+                   << " local_nic_path=" << peer_desc.local_nic_path
+                   << " peer_nic_path_=" << peer_nic_path_;
         return ERR_REJECT_HANDSHAKE;
     }
 
     // Insert peer's address from handshake
-    if (peer_desc.reply_msg.empty()) {
-        local_desc.reply_msg = "";
+    if (peer_desc.efa_addr.empty()) {
+        local_desc.reply_msg = "No EFA address provided";
         LOG(ERROR) << "Peer did not provide EFA address";
         return ERR_REJECT_HANDSHAKE;
     }
 
-    int ret = insertPeerAddr(peer_desc.reply_msg);
+    int ret = insertPeerAddr(peer_desc.efa_addr);
     if (ret != 0) {
-        local_desc.reply_msg = "";
+        local_desc.reply_msg = "Failed to insert peer address";
         return ret;
     }
 
-    // Provide our address to peer
+    // Provide our address to peer (using efa_addr field, not reply_msg)
     local_desc.local_nic_path = context_.nicPath();
     local_desc.peer_nic_path = peer_nic_path_;
-    local_desc.reply_msg = getLocalAddr();
+    local_desc.efa_addr = getLocalAddr();
+    // reply_msg should be empty on success
 
     status_.store(CONNECTED, std::memory_order_release);
     LOG(INFO) << "EFA connection established (passive): " << toString();
