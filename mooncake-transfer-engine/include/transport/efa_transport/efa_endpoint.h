@@ -42,6 +42,7 @@ class EfaContext;
 struct EfaOpContext {
     struct fi_context fi_ctx;   // Must be first member
     Transport::Slice *slice;    // Slice pointer for completion handling
+    volatile int *wr_depth;     // Pointer to endpoint's wr_depth_ for CQ completion decrement
 };
 
 // EfaEndPoint represents a libfabric endpoint for EFA communication.

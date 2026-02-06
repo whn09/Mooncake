@@ -473,16 +473,28 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
     ssize_t ret = fi_cq_read(cq, entries, to_poll);
 
     if (ret > 0) {
-        // Process completions
+        // Process completions and track wr_depth decrements per endpoint
+        std::unordered_map<volatile int *, int> wr_depth_set;
         for (ssize_t i = 0; i < ret; i++) {
             // The context pointer points to our EfaOpContext
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(entries[i].op_context);
             if (op_ctx && op_ctx->slice) {
                 // Mark the slice as successful
                 op_ctx->slice->markSuccess();
+                // Track wr_depth decrement for this endpoint
+                if (op_ctx->wr_depth) {
+                    wr_depth_set[op_ctx->wr_depth]++;
+                }
                 delete op_ctx;  // Free the operation context
             }
         }
+        // Decrement wr_depth counters for each endpoint that had completions
+        for (auto &entry : wr_depth_set) {
+            __sync_fetch_and_sub(entry.first, entry.second);
+        }
+        // Decrement CQ outstanding counter
+        __sync_fetch_and_sub(&cq_list_[cq_index]->outstanding,
+                             static_cast<int>(ret));
         return static_cast<int>(ret);
     } else if (ret == -FI_EAGAIN) {
         // No completions available
@@ -498,8 +510,14 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
                                                                   err_entry.err_data, nullptr, 0)
                            << " for slice at " << op_ctx->slice->source_addr;
                 op_ctx->slice->markFailed();
+                // Decrement wr_depth for the errored operation
+                if (op_ctx->wr_depth) {
+                    __sync_fetch_and_sub(op_ctx->wr_depth, 1);
+                }
                 delete op_ctx;
             }
+            // Decrement CQ outstanding for the error entry
+            __sync_fetch_and_sub(&cq_list_[cq_index]->outstanding, 1);
             return 1;  // Processed one error entry
         }
         return 0;

@@ -55,6 +55,7 @@ int EfaEndPoint::construct(struct fid_cq *cq, size_t num_qp_list,
     tx_cq_ = cq;
     rx_cq_ = cq;  // Use same CQ for TX and RX
     max_wr_depth_ = max_wr;
+    cq_outstanding_ = context_.cqOutstandingCount(0);
 
     // Create endpoint
     int ret = fi_endpoint(context_.domain(), context_.info(), &ep_, nullptr);
@@ -310,6 +311,18 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
 
     // Process slices - using fi_write for RDMA write operations
     for (auto it = slice_list.begin(); it != slice_list.end();) {
+        // Check WR depth and CQ capacity before posting to prevent overflow
+        if (wr_depth_ >= max_wr_depth_ ||
+            (cq_outstanding_ && *cq_outstanding_ >= (int)globalConfig().max_cqe)) {
+            // No room - move remaining slices to failed list since EFA
+            // transport has no retry mechanism
+            for (; it != slice_list.end(); ++it) {
+                failed_slice_list.push_back(*it);
+            }
+            slice_list.clear();
+            return 0;
+        }
+
         Transport::Slice *slice = *it;
 
         // Get memory region descriptor for the local buffer
@@ -326,6 +339,7 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
         EfaOpContext *op_ctx = new EfaOpContext();
         memset(op_ctx, 0, sizeof(EfaOpContext));
         op_ctx->slice = slice;
+        op_ctx->wr_depth = &wr_depth_;
 
         ssize_t ret = fi_write(ep_,
                                (void*)slice->source_addr,  // local buffer
@@ -339,13 +353,15 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
         if (ret == 0) {
             // Successfully posted - do NOT mark success here!
             // Success is marked only after CQ completion in pollCq
-            wr_depth_++;
+            __sync_fetch_and_add(&wr_depth_, 1);
+            if (cq_outstanding_) __sync_fetch_and_add(cq_outstanding_, 1);
             slice->status = Transport::Slice::PENDING;  // Still pending until CQ completion
             it = slice_list.erase(it);
         } else if (ret == -FI_EAGAIN) {
-            // Queue full, try again later
-            delete op_ctx;  // Free context since we didn't post
-            ++it;
+            // Queue full - move remaining slices to failed list
+            delete op_ctx;
+            failed_slice_list.push_back(slice);
+            it = slice_list.erase(it);
         } else {
             // Error
             LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret)
