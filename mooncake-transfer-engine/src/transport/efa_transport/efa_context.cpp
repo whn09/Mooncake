@@ -105,6 +105,7 @@ int EfaContext::construct(size_t num_cq_list, size_t num_comp_channels,
     std::string domain_name = device_name_ + "-rdm";
     hints_->domain_attr->name = strdup(domain_name.c_str());
     hints_->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+    hints_->domain_attr->threading = FI_THREAD_SAFE;
 
     // Get fabric info
     int ret = fi_getinfo(FI_VERSION(1, 14), nullptr, nullptr, 0, hints_, &fi_info_);
