@@ -310,84 +310,125 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
         }
     }
 
-    // Process slices - using fi_write for RDMA write operations
-    // When WR depth or CQ capacity is full, wait for the CQ polling worker
-    // thread to drain completions before retrying, rather than immediately
-    // failing slices (which would cause vLLM KV transfer failures).
+    // Process slices - using fi_write for RDMA write operations.
+    // Use atomic reserve-before-post to prevent CQ overflow when multiple
+    // threads post to endpoints sharing the same CQ.  The CQ has a fixed
+    // capacity (max_cqe); if more completions arrive than it can hold, the
+    // provider silently drops them and those slices never complete (hang).
     const int kMaxBackoffYields = 100000;
+    const int cq_limit = static_cast<int>(globalConfig().max_cqe);
 
     for (auto it = slice_list.begin(); it != slice_list.end();) {
-        // Wait for room in WR depth and CQ before posting
+        // --- Atomically reserve CQ and WR capacity before posting ---
+        // This eliminates the TOCTOU race where multiple threads pass the
+        // capacity check simultaneously and collectively overflow the CQ.
         int backoff = 0;
-        while (wr_depth_ >= max_wr_depth_ ||
-               (cq_outstanding_ && *cq_outstanding_ >= (int)globalConfig().max_cqe)) {
-            if (++backoff > kMaxBackoffYields) {
-                // Give up after extended wait - fail remaining slices
-                LOG(WARNING) << "EFA submitPostSend: timed out waiting for CQ drain"
-                             << " (wr_depth=" << wr_depth_
-                             << ", max=" << max_wr_depth_
-                             << ", cq_outstanding="
-                             << (cq_outstanding_ ? *cq_outstanding_ : -1)
-                             << ", max_cqe=" << globalConfig().max_cqe << ")";
-                for (; it != slice_list.end(); ++it) {
-                    failed_slice_list.push_back(*it);
-                }
-                slice_list.clear();
-                return 0;
+        bool reserved = false;
+        while (!reserved) {
+            // Try to reserve one WR slot
+            int cur_wr = wr_depth_;
+            if (cur_wr >= max_wr_depth_) {
+                if (++backoff > kMaxBackoffYields) goto timeout;
+                std::this_thread::yield();
+                continue;
             }
-            std::this_thread::yield();
+            if (!__sync_bool_compare_and_swap(&wr_depth_, cur_wr, cur_wr + 1)) {
+                continue;  // CAS failed, retry immediately
+            }
+            // WR slot reserved. Now try to reserve CQ slot.
+            if (cq_outstanding_) {
+                int cur_cq = *cq_outstanding_;
+                while (cur_cq < cq_limit) {
+                    if (__sync_bool_compare_and_swap(cq_outstanding_, cur_cq, cur_cq + 1)) {
+                        reserved = true;
+                        break;
+                    }
+                    cur_cq = *cq_outstanding_;
+                }
+                if (!reserved) {
+                    // CQ full - release WR reservation and back off
+                    __sync_fetch_and_sub(&wr_depth_, 1);
+                    if (++backoff > kMaxBackoffYields) goto timeout;
+                    std::this_thread::yield();
+                    continue;
+                }
+            } else {
+                reserved = true;
+            }
         }
 
-        Transport::Slice *slice = *it;
+        {
+            Transport::Slice *slice = *it;
 
-        // Get memory region descriptor for the local buffer
-        void *local_desc = context_.mrDesc(slice->source_addr);
-        if (!local_desc) {
-            LOG(ERROR) << "No MR descriptor found for address " << slice->source_addr;
-            failed_slice_list.push_back(slice);
-            it = slice_list.erase(it);
-            continue;
+            // Get memory region descriptor for the local buffer
+            void *local_desc = context_.mrDesc(slice->source_addr);
+            if (!local_desc) {
+                LOG(ERROR) << "No MR descriptor found for address " << slice->source_addr;
+                // Release reservations
+                __sync_fetch_and_sub(&wr_depth_, 1);
+                if (cq_outstanding_) __sync_fetch_and_sub(cq_outstanding_, 1);
+                failed_slice_list.push_back(slice);
+                it = slice_list.erase(it);
+                continue;
+            }
+
+            // Allocate operation context to track the slice for completion
+            // Note: This memory is freed after CQ completion in pollCq
+            EfaOpContext *op_ctx = new EfaOpContext();
+            memset(op_ctx, 0, sizeof(EfaOpContext));
+            op_ctx->slice = slice;
+            op_ctx->wr_depth = &wr_depth_;
+
+            ssize_t ret = fi_write(ep_,
+                                   (void*)slice->source_addr,  // local buffer
+                                   slice->length,
+                                   local_desc,
+                                   peer_fi_addr_,
+                                   slice->rdma.dest_addr,  // remote address
+                                   slice->rdma.dest_rkey,  // remote key
+                                   &op_ctx->fi_ctx);       // context for completion
+
+            if (ret == 0) {
+                // Successfully posted - do NOT mark success here!
+                // Success is marked only after CQ completion in pollCq.
+                // WR and CQ reservations are already accounted for.
+                slice->status = Transport::Slice::PENDING;
+                it = slice_list.erase(it);
+            } else if (ret == -FI_EAGAIN) {
+                // Provider queue full - release reservations and retry
+                delete op_ctx;
+                __sync_fetch_and_sub(&wr_depth_, 1);
+                if (cq_outstanding_) __sync_fetch_and_sub(cq_outstanding_, 1);
+                std::this_thread::yield();
+                // Don't advance iterator - retry the same slice
+            } else {
+                // Hard error - release reservations
+                LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret)
+                           << " (source=" << slice->source_addr
+                           << ", len=" << slice->length
+                           << ", dest=" << (void*)slice->rdma.dest_addr
+                           << ", rkey=" << slice->rdma.dest_rkey << ")";
+                delete op_ctx;
+                __sync_fetch_and_sub(&wr_depth_, 1);
+                if (cq_outstanding_) __sync_fetch_and_sub(cq_outstanding_, 1);
+                failed_slice_list.push_back(slice);
+                it = slice_list.erase(it);
+            }
         }
+        continue;
 
-        // Allocate operation context to track the slice for completion
-        // Note: This memory is freed after CQ completion in pollCq
-        EfaOpContext *op_ctx = new EfaOpContext();
-        memset(op_ctx, 0, sizeof(EfaOpContext));
-        op_ctx->slice = slice;
-        op_ctx->wr_depth = &wr_depth_;
-
-        ssize_t ret = fi_write(ep_,
-                               (void*)slice->source_addr,  // local buffer
-                               slice->length,
-                               local_desc,
-                               peer_fi_addr_,
-                               slice->rdma.dest_addr,  // remote address
-                               slice->rdma.dest_rkey,  // remote key
-                               &op_ctx->fi_ctx);       // context for completion
-
-        if (ret == 0) {
-            // Successfully posted - do NOT mark success here!
-            // Success is marked only after CQ completion in pollCq
-            __sync_fetch_and_add(&wr_depth_, 1);
-            if (cq_outstanding_) __sync_fetch_and_add(cq_outstanding_, 1);
-            slice->status = Transport::Slice::PENDING;  // Still pending until CQ completion
-            it = slice_list.erase(it);
-        } else if (ret == -FI_EAGAIN) {
-            // Provider queue full - yield and retry this slice
-            delete op_ctx;
-            std::this_thread::yield();
-            // Don't advance iterator - retry the same slice
-        } else {
-            // Hard error
-            LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret)
-                       << " (source=" << slice->source_addr
-                       << ", len=" << slice->length
-                       << ", dest=" << (void*)slice->rdma.dest_addr
-                       << ", rkey=" << slice->rdma.dest_rkey << ")";
-            delete op_ctx;  // Free context since we didn't post
-            failed_slice_list.push_back(slice);
-            it = slice_list.erase(it);
+    timeout:
+        LOG(WARNING) << "EFA submitPostSend: timed out waiting for CQ drain"
+                     << " (wr_depth=" << wr_depth_
+                     << ", max=" << max_wr_depth_
+                     << ", cq_outstanding="
+                     << (cq_outstanding_ ? *cq_outstanding_ : -1)
+                     << ", max_cqe=" << cq_limit << ")";
+        for (; it != slice_list.end(); ++it) {
+            failed_slice_list.push_back(*it);
         }
+        slice_list.clear();
+        return 0;
     }
 
     return 0;
