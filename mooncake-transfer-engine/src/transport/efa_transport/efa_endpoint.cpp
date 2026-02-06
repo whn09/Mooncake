@@ -213,7 +213,7 @@ int EfaEndPoint::setupConnectionsByActive() {
     }
 
     status_.store(CONNECTED, std::memory_order_release);
-    LOG(INFO) << "EFA connection established: " << toString()
+    VLOG(1) << "EFA connection established: " << toString()
               << " peer_fi_addr=" << peer_fi_addr_;
     return 0;
 }
@@ -257,7 +257,7 @@ int EfaEndPoint::setupConnectionsByPassive(const HandShakeDesc &peer_desc,
     // reply_msg should be empty on success
 
     status_.store(CONNECTED, std::memory_order_release);
-    LOG(INFO) << "EFA connection established (passive): " << toString();
+    VLOG(1) << "EFA connection established (passive): " << toString();
     return 0;
 }
 
