@@ -184,7 +184,7 @@ Use `transfer_engine_bench` to measure EFA transport throughput between two node
     --report_unit=GB
 ```
 
-Replace `<target_hostname>:<target_port>` with the target node's address shown in the target's startup log (e.g., `172.31.29.226:12345`).
+Replace `<target_hostname>:<target_port>` with the target node's address shown in the target's startup log (e.g., `ip-172-31-29-226:12345`).
 
 ### Key Parameters
 
@@ -198,16 +198,31 @@ Replace `<target_hostname>:<target_port>` with the target node's address shown i
 | `--operation` | read | `read` or `write` |
 | `--report_unit` | GB | `GB\|GiB\|Gb\|MB\|MiB\|Mb` |
 
+### Benchmark Results
+
+Tested on two p5e.48xlarge instances (8 EFA devices each, 8×400 Gbps) in the same AWS placement group:
+
+| Transport | Throughput | Per-NIC Bandwidth | Notes |
+|-----------|-----------|-------------------|-------|
+| **EFA** | **59.72 GB/s** | ~72 Gbps × 8 NICs | Balanced across all 8 EFA devices |
+| TCP (iperf3 baseline) | 9.5 GB/s | 76 Gbps total | Kernel TCP stack, 8 parallel streams |
+| TCP (Mooncake) | 0.11 GB/s | — | Mooncake TCP transport, unoptimized for throughput |
+
+**EFA vs TCP**: EFA delivers **6.3x** the raw TCP bandwidth by bypassing the kernel network stack.
+
+**EFA vs RoCE RDMA**: On comparable 8×400 Gbps RoCE networks, Mooncake's RDMA transport achieves ~190 GB/s. EFA reaches ~31% of that due to the SRD (Scalable Reliable Datagram) protocol overhead — EFA emulates RDMA semantics via a message-based protocol, whereas RoCE provides true hardware-offloaded one-sided RDMA operations.
+
+Test configuration:
+```
+--threads=8 --block_size=65536 --batch_size=128 --buffer_size=1073741824 --duration=10
+```
+
 ### Tuning Tips
 
 - Increase `--threads` to saturate multiple EFA devices
 - Set `MC_SLICE_SIZE` environment variable (default: 65536) to control how transfers are sliced across devices — larger values reduce overhead, smaller values improve multi-NIC parallelism
-- On p5e.48xlarge (8 EFA devices), try `--threads=16` with the default block/slice size
-
-Output example:
-```
-Test completed: duration 10.00, batch count 1250, throughput 85.50 GB/s
-```
+- On p5e.48xlarge (8 EFA devices), try `--threads=8` or `--threads=16` with the default block/slice size
+- Allocate buffers on both NUMA nodes for balanced NIC utilization (the bench tool does this by default)
 
 ## Technical Details
 
@@ -238,11 +253,34 @@ AWS EFA exposes RDMA-like devices through the ibverbs interface, but does not su
 └─────────────────────────────────────────────────────┘
 ```
 
+### Thread Safety
+
+The EFA transport requests `FI_THREAD_SAFE` from the libfabric provider and adds per-endpoint spinlocks to serialize `fi_write` calls. This is necessary because:
+
+- Multiple submission threads may route slices to the same endpoint concurrently
+- libfabric RDM endpoints default to `FI_THREAD_UNSPEC` (no thread safety guarantees)
+- Concurrent `fi_write` without serialization corrupts provider internals, causing completions to silently vanish
+
+CQ completion queues are polled by dedicated worker threads (one per EFA device) that run independently of submission threads.
+
+### EFA vs RoCE RDMA
+
+| Feature | EFA (libfabric SRD) | RoCE (ibverbs) |
+|---------|--------------------|--------------------|
+| Protocol | Scalable Reliable Datagram | RDMA over Converged Ethernet |
+| Endpoint type | `FI_EP_RDM` (message-based) | Queue Pairs (true RDMA) |
+| Write operation | Software-emulated via messages + ACKs | Hardware-offloaded one-sided RDMA |
+| CPU overhead | Moderate (provider processes ACKs) | Minimal (NIC handles everything) |
+| Throughput (8×400G) | ~60 GB/s | ~190 GB/s |
+| AWS availability | All EFA-enabled instances | Not available on AWS |
+
 ### Supported AWS Instance Types
 
-- p5e.48xlarge (16 EFA devices, rdmap* naming)
+- p5e.48xlarge (8 EFA devices, `rdmap*` naming)
 - p4d.24xlarge (4 EFA devices)
 - Other EFA-enabled instances
+
+Use `fi_info -p efa` to list available EFA devices on your instance.
 
 ## Troubleshooting
 
@@ -272,3 +310,11 @@ Solution: Verify `/opt/amazon/efa/lib` is in the library path:
 ```bash
 export LD_LIBRARY_PATH=/opt/amazon/efa/lib:$LD_LIBRARY_PATH
 ```
+
+### Workers hang under high concurrency
+
+If `transfer_engine_bench` hangs with some workers never completing:
+
+1. **Ensure both nodes are running the same build** — the CQ backpressure and thread-safety fixes must be present on both sides
+2. **Reduce concurrency** to verify basic connectivity: `--threads=1 --batch_size=16`
+3. **Check CQ poller threads**: logs should show "Started N CQ polling worker threads" where N matches the number of EFA devices
