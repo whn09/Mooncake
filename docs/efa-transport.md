@@ -6,7 +6,7 @@ This document describes how to build and use Mooncake with AWS Elastic Fabric Ad
 
 ### 1. AWS EFA Driver and libfabric
 
-EFA driver and libfabric should be pre-installed on AWS instances with EFA support (e.g., p5e.48xlarge, p4d.24xlarge).
+EFA driver and libfabric should be pre-installed on AWS instances with EFA support (e.g., p6-b200.48xlarge, p5e.48xlarge, p4d.24xlarge).
 
 Verify installation:
 ```bash
@@ -200,7 +200,7 @@ Replace `<target_hostname>:<target_port>` with the target node's address shown i
 
 ### Benchmark Results
 
-Tested on two p5e.48xlarge instances (8 EFA devices each, 8×400 Gbps) in the same AWS placement group:
+Tested on two p6-b200.48xlarge instances (8 EFA devices each, 8×400 Gbps) in the same AWS placement group:
 
 | Transport | Throughput | Per-NIC Bandwidth | Notes |
 |-----------|-----------|-------------------|-------|
@@ -276,7 +276,8 @@ CQ completion queues are polled by dedicated worker threads (one per EFA device)
 
 ### Supported AWS Instance Types
 
-- p5e.48xlarge (8 EFA devices, `rdmap*` naming)
+- p6-b200.48xlarge (8 EFA devices, `rdmap*` naming)
+- p5e.48xlarge (16 EFA devices, `rdmap*` naming)
 - p4d.24xlarge (4 EFA devices)
 - Other EFA-enabled instances
 
