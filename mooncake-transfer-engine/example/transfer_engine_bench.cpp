@@ -88,7 +88,7 @@ DEFINE_string(mode, "initiator",
 DEFINE_string(operation, "read", "Operation type: read or write");
 
 DEFINE_string(protocol, "rdma",
-              "Transfer protocol: rdma|barex|tcp|nvlink|nvlink_intra|hip");
+              "Transfer protocol: rdma|barex|tcp|efa|nvlink|nvlink_intra|hip");
 
 DEFINE_string(device_name, "mlx5_2",
               "Device name to use, valid if protocol=rdma");
@@ -458,9 +458,9 @@ static Transport *installTransportFromFlags(TransferEngine *engine) {
         args.get()[0] = const_cast<char *>(nic_priority_matrix.c_str());
         args.get()[1] = nullptr;
         xport = engine->installTransport(FLAGS_protocol.c_str(), args.get());
-    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "nvlink" ||
-               FLAGS_protocol == "hip" || FLAGS_protocol == "nvlink_intra" ||
-               FLAGS_protocol == "ubshmem") {
+    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "efa" ||
+               FLAGS_protocol == "nvlink" || FLAGS_protocol == "hip" ||
+               FLAGS_protocol == "nvlink_intra" || FLAGS_protocol == "ubshmem") {
         xport = engine->installTransport(FLAGS_protocol.c_str(), nullptr);
     } else {
         LOG(ERROR) << "Unsupported protocol: " << FLAGS_protocol;
