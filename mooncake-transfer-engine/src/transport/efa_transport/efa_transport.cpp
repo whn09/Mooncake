@@ -607,14 +607,15 @@ int EfaTransport::onSetupEfaConnections(const HandShakeDesc &peer_desc,
     auto local_nic_name = getNicNameFromNicPath(peer_desc.peer_nic_path);
     if (local_nic_name.empty()) return ERR_INVALID_ARGUMENT;
 
+    // Find context by device name instead of using hca_list index, since
+    // context_list_ only contains EFA devices and may have different
+    // indexing than the full hca_list.
     std::shared_ptr<EfaContext> context;
-    int index = 0;
-    for (auto &entry : local_topology_->getHcaList()) {
-        if (entry == local_nic_name) {
-            context = context_list_[index];
+    for (auto &entry : context_list_) {
+        if (entry->deviceName() == local_nic_name) {
+            context = entry;
             break;
         }
-        index++;
     }
     if (!context) return ERR_INVALID_ARGUMENT;
 
@@ -628,16 +629,31 @@ int EfaTransport::initializeEfaResources() {
 
     // Filter for EFA devices (names typically start with "rdmap" on AWS)
     std::vector<std::string> efa_devices;
+    std::vector<std::string> non_efa_devices;
     for (auto &device_name : hca_list) {
         if (device_name.find("rdmap") != std::string::npos ||
             device_name.find("efa") != std::string::npos) {
             efa_devices.push_back(device_name);
+        } else {
+            non_efa_devices.push_back(device_name);
         }
     }
 
     if (efa_devices.empty()) {
         LOG(WARNING) << "EfaTransport: No EFA devices found, falling back to all devices";
         efa_devices = hca_list;
+        non_efa_devices.clear();
+    }
+
+    // Disable non-EFA devices (e.g. ibp* IB devices) in the topology so that
+    // topology device indices stay aligned with context_list_ indices.
+    // Without this, selectDevice() can return an index from the full topology
+    // (which includes non-EFA devices), causing out-of-bounds access on
+    // context_list_ which only contains EFA devices.
+    for (auto &device_name : non_efa_devices) {
+        local_topology_->disableDevice(device_name);
+        LOG(INFO) << "EfaTransport: Disabled non-EFA device " << device_name
+                  << " in topology";
     }
 
     for (auto &device_name : efa_devices) {
