@@ -37,6 +37,7 @@ sudo apt-get install -y \
     libboost-all-dev \
     libcurl4-openssl-dev \
     libyaml-cpp-dev \
+    libgtest-dev \
     pybind11-dev \
     python3-dev
 
@@ -69,7 +70,7 @@ cmake .. \
     -DUSE_EFA=ON \
     -DWITH_TE=ON \
     -DWITH_STORE=ON \
-    -DBUILD_UNIT_TESTS=OFF \
+    -DBUILD_UNIT_TESTS=ON \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
 make -j$(nproc)
@@ -120,6 +121,92 @@ vllm serve <model_path> -tp 8 \
    --port 8020 \
    --trust-remote-code \
    --kv-transfer-config '{"kv_connector":"MooncakeConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"mooncake_protocol":"efa"}}'
+```
+
+## Unit Tests
+
+Run the EFA transport unit tests (requires EFA hardware):
+
+```bash
+./build/mooncake-transfer-engine/tests/efa_transport_test
+```
+
+The test suite includes:
+
+| Test | Description |
+|------|-------------|
+| `InstallTransport` | Verify EFA transport installation |
+| `LoopbackWrite` | Loopback write operation |
+| `WriteAndRead` | Write then read with data integrity check |
+| `MultiWrite` | Batch write (16 requests) |
+| `StressMultipleBatches` | Stress test (20 batches x 8 requests) |
+
+You can also run all unit tests via CTest:
+
+```bash
+cd build && ctest --output-on-failure
+```
+
+Environment variables for test configuration:
+
+```bash
+export MC_METADATA_SERVER=P2PHANDSHAKE     # default
+export MC_LOCAL_SERVER_NAME=127.0.0.1:12345  # default
+```
+
+## Performance Benchmark
+
+Use `transfer_engine_bench` to measure EFA transport throughput between two nodes.
+
+### Target Node (receiver)
+
+```bash
+./build/mooncake-transfer-engine/example/transfer_engine_bench \
+    --mode=target \
+    --protocol=efa \
+    --metadata_server=P2PHANDSHAKE
+```
+
+### Initiator Node (sender)
+
+```bash
+./build/mooncake-transfer-engine/example/transfer_engine_bench \
+    --mode=initiator \
+    --protocol=efa \
+    --metadata_server=P2PHANDSHAKE \
+    --segment_id=<target_hostname>:<target_port> \
+    --operation=write \
+    --duration=10 \
+    --threads=8 \
+    --block_size=65536 \
+    --batch_size=128 \
+    --buffer_size=1073741824 \
+    --report_unit=GB
+```
+
+Replace `<target_hostname>:<target_port>` with the target node's address shown in the target's startup log (e.g., `172.31.29.226:12345`).
+
+### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--block_size` | 65536 | Bytes per transfer request |
+| `--batch_size` | 128 | Requests per batch |
+| `--threads` | 12 | Concurrent submission threads |
+| `--buffer_size` | 1 GB | Total buffer size |
+| `--duration` | 10 | Test duration in seconds |
+| `--operation` | read | `read` or `write` |
+| `--report_unit` | GB | `GB\|GiB\|Gb\|MB\|MiB\|Mb` |
+
+### Tuning Tips
+
+- Increase `--threads` to saturate multiple EFA devices
+- Set `MC_SLICE_SIZE` environment variable (default: 65536) to control how transfers are sliced across devices — larger values reduce overhead, smaller values improve multi-NIC parallelism
+- On p5e.48xlarge (8 EFA devices), try `--threads=16` with the default block/slice size
+
+Output example:
+```
+Test completed: duration 10.00, batch count 1250, throughput 85.50 GB/s
 ```
 
 ## Technical Details
