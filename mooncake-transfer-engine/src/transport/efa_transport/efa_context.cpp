@@ -43,6 +43,17 @@ std::shared_ptr<EfaEndPoint> EfaEndpointStore::get(const std::string &peer_nic_p
     return nullptr;
 }
 
+std::shared_ptr<EfaEndPoint> EfaEndpointStore::getOrInsert(
+        const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> new_ep) {
+    RWSpinlock::WriteGuard guard(lock_);
+    auto it = endpoints_.find(peer_nic_path);
+    if (it != endpoints_.end()) {
+        return it->second;  // Another thread already created it
+    }
+    endpoints_[peer_nic_path] = new_ep;
+    return new_ep;
+}
+
 void EfaEndpointStore::add(const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> endpoint) {
     RWSpinlock::WriteGuard guard(lock_);
     endpoints_[peer_nic_path] = endpoint;
@@ -341,10 +352,13 @@ void *EfaContext::mrDesc(void *addr) {
 std::shared_ptr<EfaEndPoint> EfaContext::endpoint(const std::string &peer_nic_path) {
     if (!endpoint_store_) return nullptr;
 
-    auto endpoint = endpoint_store_->get(peer_nic_path);
-    if (endpoint) return endpoint;
+    // Fast path: endpoint already exists
+    auto ep = endpoint_store_->get(peer_nic_path);
+    if (ep) return ep;
 
-    // Create new endpoint
+    // Slow path: create new endpoint, then atomically insert (or get existing
+    // if another thread raced us).  getOrInsert prevents duplicate endpoints
+    // and duplicate AV entries for the same peer.
     auto new_endpoint = std::make_shared<EfaEndPoint>(*this);
     if (!cq_list_.empty() && cq_list_[0]) {
         int ret = new_endpoint->construct(cq_list_[0]->cq);
@@ -354,8 +368,9 @@ std::shared_ptr<EfaEndPoint> EfaContext::endpoint(const std::string &peer_nic_pa
         }
     }
     new_endpoint->setPeerNicPath(peer_nic_path);
-    endpoint_store_->add(peer_nic_path, new_endpoint);
-    return new_endpoint;
+    ep = endpoint_store_->getOrInsert(peer_nic_path, new_endpoint);
+    // If another thread won the race, new_endpoint is discarded (RAII cleanup)
+    return ep;
 }
 
 int EfaContext::deleteEndpoint(const std::string &peer_nic_path) {
@@ -472,11 +487,7 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
     struct fi_cq_data_entry entries[64];
     int to_poll = std::min(max_entries, 64);
 
-    // Acquire domain lock: fi_cq_read shares EFA device resources with
-    // fi_write on endpoints bound to this CQ.
-    acquireDomainLock();
     ssize_t ret = fi_cq_read(cq, entries, to_poll);
-    releaseDomainLock();
 
     if (ret > 0) {
         // Process completions outside the lock (markSuccess / delete are safe)
@@ -505,9 +516,7 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
         struct fi_cq_err_entry err_entry;
         std::unordered_map<volatile int *, int> wr_depth_set;
 
-        acquireDomainLock();
         while ((ret = fi_cq_readerr(cq, &err_entry, 0)) > 0) {
-            releaseDomainLock();
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(err_entry.op_context);
             if (op_ctx && op_ctx->slice) {
                 LOG(ERROR) << "EFA CQ error: " << fi_cq_strerror(cq, err_entry.prov_errno,
@@ -520,9 +529,7 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
                 delete op_ctx;
             }
             err_count++;
-            acquireDomainLock();
         }
-        releaseDomainLock();
 
         for (auto &entry : wr_depth_set) {
             __sync_fetch_and_sub(entry.first, entry.second);

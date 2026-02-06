@@ -51,8 +51,8 @@ void EfaTransport::startWorkerThreads() {
     if (worker_running_) return;
 
     worker_running_ = true;
-    // Start one worker thread per context
-    size_t num_threads = std::min(context_list_.size(), (size_t)4);
+    // One poller thread per context for responsive CQ draining under load
+    size_t num_threads = context_list_.size();
     for (size_t i = 0; i < num_threads; i++) {
         worker_threads_.emplace_back(&EfaTransport::workerThreadFunc, this, i);
     }

@@ -379,11 +379,10 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
             op_ctx->slice = slice;
             op_ctx->wr_depth = &wr_depth_;
 
-            // Serialize fi_write at the domain level: all endpoints and the
-            // CQ poller within the same EFA device share TX resources.
-            // Concurrent access from different threads (even on different
-            // endpoints) corrupts provider internals.
-            context_.acquireDomainLock();
+            // Serialize fi_write per-endpoint: concurrent fi_write on the
+            // same RDM endpoint corrupts provider state.  Cross-endpoint
+            // safety is handled by the FI_THREAD_SAFE hint.
+            while (post_lock_.test_and_set(std::memory_order_acquire)) {}
             ssize_t ret = fi_write(ep_,
                                    (void*)slice->source_addr,  // local buffer
                                    slice->length,
@@ -392,7 +391,7 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
                                    slice->rdma.dest_addr,  // remote address
                                    slice->rdma.dest_rkey,  // remote key
                                    &op_ctx->fi_ctx);       // context for completion
-            context_.releaseDomainLock();
+            post_lock_.clear(std::memory_order_release);
 
             if (ret == 0) {
                 // Successfully posted - do NOT mark success here!

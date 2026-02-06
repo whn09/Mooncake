@@ -59,6 +59,10 @@ struct EfaMemoryRegionMeta {
 class EfaEndpointStore {
    public:
     std::shared_ptr<EfaEndPoint> get(const std::string &peer_nic_path);
+    // Atomically get-or-insert: returns existing endpoint or inserts new_ep.
+    // Prevents duplicate endpoint creation from concurrent callers.
+    std::shared_ptr<EfaEndPoint> getOrInsert(const std::string &peer_nic_path,
+                                              std::shared_ptr<EfaEndPoint> new_ep);
     void add(const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> endpoint);
     void remove(const std::string &peer_nic_path);
     int disconnectAll();
@@ -165,20 +169,6 @@ class EfaContext {
 
     RWSpinlock mr_lock_;
     std::unordered_map<uint64_t, EfaMemoryRegionMeta> mr_map_;
-
-    // Domain-level spinlock serializing all fi_write and fi_cq_read calls.
-    // Endpoints and CQs within the same domain share EFA device TX resources;
-    // concurrent access from different threads corrupts provider state even
-    // across distinct endpoints.
-    std::atomic_flag domain_lock_ = ATOMIC_FLAG_INIT;
-
-   public:
-    void acquireDomainLock() {
-        while (domain_lock_.test_and_set(std::memory_order_acquire)) {}
-    }
-    void releaseDomainLock() {
-        domain_lock_.clear(std::memory_order_release);
-    }
 };
 
 }  // namespace mooncake
