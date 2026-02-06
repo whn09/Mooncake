@@ -379,12 +379,11 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
             op_ctx->slice = slice;
             op_ctx->wr_depth = &wr_depth_;
 
-            // Serialize fi_write: libfabric RDM endpoints are not thread-safe
-            // by default.  Concurrent fi_write corrupts provider internals,
-            // causing operations to silently vanish (no CQ completion).
-            while (post_lock_.test_and_set(std::memory_order_acquire)) {
-                // spin
-            }
+            // Serialize fi_write at the domain level: all endpoints and the
+            // CQ poller within the same EFA device share TX resources.
+            // Concurrent access from different threads (even on different
+            // endpoints) corrupts provider internals.
+            context_.acquireDomainLock();
             ssize_t ret = fi_write(ep_,
                                    (void*)slice->source_addr,  // local buffer
                                    slice->length,
@@ -393,7 +392,7 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
                                    slice->rdma.dest_addr,  // remote address
                                    slice->rdma.dest_rkey,  // remote key
                                    &op_ctx->fi_ctx);       // context for completion
-            post_lock_.clear(std::memory_order_release);
+            context_.releaseDomainLock();
 
             if (ret == 0) {
                 // Successfully posted - do NOT mark success here!

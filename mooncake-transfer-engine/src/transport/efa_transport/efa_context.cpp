@@ -472,42 +472,42 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
     struct fi_cq_data_entry entries[64];
     int to_poll = std::min(max_entries, 64);
 
+    // Acquire domain lock: fi_cq_read shares EFA device resources with
+    // fi_write on endpoints bound to this CQ.
+    acquireDomainLock();
     ssize_t ret = fi_cq_read(cq, entries, to_poll);
+    releaseDomainLock();
 
     if (ret > 0) {
-        // Process completions and track wr_depth decrements per endpoint
+        // Process completions outside the lock (markSuccess / delete are safe)
         std::unordered_map<volatile int *, int> wr_depth_set;
         for (ssize_t i = 0; i < ret; i++) {
-            // The context pointer points to our EfaOpContext
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(entries[i].op_context);
             if (op_ctx && op_ctx->slice) {
-                // Mark the slice as successful
                 op_ctx->slice->markSuccess();
-                // Track wr_depth decrement for this endpoint
                 if (op_ctx->wr_depth) {
                     wr_depth_set[op_ctx->wr_depth]++;
                 }
-                delete op_ctx;  // Free the operation context
+                delete op_ctx;
             }
         }
-        // Decrement wr_depth counters for each endpoint that had completions
         for (auto &entry : wr_depth_set) {
             __sync_fetch_and_sub(entry.first, entry.second);
         }
-        // Decrement CQ outstanding counter
         __sync_fetch_and_sub(&cq_list_[cq_index]->outstanding,
                              static_cast<int>(ret));
         return static_cast<int>(ret);
     } else if (ret == -FI_EAGAIN) {
-        // No completions available
         return 0;
     } else if (ret < 0) {
-        // CQ error (typically -FI_EAVAIL) - drain all queued error entries
-        // before normal completions become accessible again.
+        // CQ error - drain all queued error entries under the domain lock
         int err_count = 0;
         struct fi_cq_err_entry err_entry;
         std::unordered_map<volatile int *, int> wr_depth_set;
+
+        acquireDomainLock();
         while ((ret = fi_cq_readerr(cq, &err_entry, 0)) > 0) {
+            releaseDomainLock();
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(err_entry.op_context);
             if (op_ctx && op_ctx->slice) {
                 LOG(ERROR) << "EFA CQ error: " << fi_cq_strerror(cq, err_entry.prov_errno,
@@ -520,7 +520,10 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
                 delete op_ctx;
             }
             err_count++;
+            acquireDomainLock();
         }
+        releaseDomainLock();
+
         for (auto &entry : wr_depth_set) {
             __sync_fetch_and_sub(entry.first, entry.second);
         }

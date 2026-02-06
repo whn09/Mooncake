@@ -151,11 +151,6 @@ class EfaEndPoint {
     int max_wr_depth_;
     volatile int *cq_outstanding_;
 
-    // Spinlock to serialize fi_write calls on this endpoint.
-    // libfabric RDM endpoints are not thread-safe by default
-    // (FI_THREAD_UNSPEC); concurrent fi_write corrupts internal state.
-    std::atomic_flag post_lock_ = ATOMIC_FLAG_INIT;
-
     volatile bool active_;
     volatile uint64_t inactive_time_;
 };

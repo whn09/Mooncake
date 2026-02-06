@@ -165,6 +165,20 @@ class EfaContext {
 
     RWSpinlock mr_lock_;
     std::unordered_map<uint64_t, EfaMemoryRegionMeta> mr_map_;
+
+    // Domain-level spinlock serializing all fi_write and fi_cq_read calls.
+    // Endpoints and CQs within the same domain share EFA device TX resources;
+    // concurrent access from different threads corrupts provider state even
+    // across distinct endpoints.
+    std::atomic_flag domain_lock_ = ATOMIC_FLAG_INIT;
+
+   public:
+    void acquireDomainLock() {
+        while (domain_lock_.test_and_set(std::memory_order_acquire)) {}
+    }
+    void releaseDomainLock() {
+        domain_lock_.clear(std::memory_order_release);
+    }
 };
 
 }  // namespace mooncake
