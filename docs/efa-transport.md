@@ -164,7 +164,6 @@ Use `transfer_engine_bench` to measure EFA transport throughput between two node
 ./build/mooncake-transfer-engine/example/transfer_engine_bench \
     --mode=target \
     --protocol=efa \
-    --auto_discovery \
     --metadata_server=P2PHANDSHAKE
 ```
 
@@ -174,7 +173,6 @@ Use `transfer_engine_bench` to measure EFA transport throughput between two node
 ./build/mooncake-transfer-engine/example/transfer_engine_bench \
     --mode=initiator \
     --protocol=efa \
-    --auto_discovery \
     --metadata_server=P2PHANDSHAKE \
     --segment_id=<target_hostname>:<target_port> \
     --operation=write \

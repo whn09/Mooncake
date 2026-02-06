@@ -458,7 +458,12 @@ static Transport *installTransportFromFlags(TransferEngine *engine) {
         args.get()[0] = const_cast<char *>(nic_priority_matrix.c_str());
         args.get()[1] = nullptr;
         xport = engine->installTransport(FLAGS_protocol.c_str(), args.get());
-    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "efa" ||
+    } else if (FLAGS_protocol == "efa") {
+        // EFA needs topology discovery to find devices, but auto_discovery
+        // would auto-install RDMA transport. Manually discover instead.
+        engine->getLocalTopology()->discover({});
+        xport = engine->installTransport("efa", nullptr);
+    } else if (FLAGS_protocol == "tcp" ||
                FLAGS_protocol == "nvlink" || FLAGS_protocol == "hip" ||
                FLAGS_protocol == "nvlink_intra" || FLAGS_protocol == "ubshmem") {
         xport = engine->installTransport(FLAGS_protocol.c_str(), nullptr);
