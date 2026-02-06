@@ -185,9 +185,10 @@ int EfaContext::construct(size_t num_cq_list, size_t num_comp_channels,
 }
 
 int EfaContext::deconstruct() {
-    if (endpoint_store_) {
-        endpoint_store_->disconnectAll();
-    }
+    // Destroy all endpoints before closing domain/fabric/AV.
+    // Endpoints hold fi_ep handles that reference the domain, so they must
+    // be closed first.
+    endpoint_store_.reset();
 
     {
         RWSpinlock::WriteGuard guard(mr_lock_);

@@ -77,6 +77,9 @@ class EFATransportTest : public ::testing::Test {
         s.buffer_size = buffer_size;
 
         s.engine = std::make_unique<TransferEngine>(false);
+        // Manually discover topology to populate EFA device list
+        // (same pattern as the Python binding in transfer_engine_py.cpp)
+        s.engine->getLocalTopology()->discover({});
         auto hp = parseHostNameWithPort(local_server_name_);
         int rc =
             s.engine->init(metadata_server_, local_server_name_, hp.first.c_str(),
@@ -92,8 +95,9 @@ class EFATransportTest : public ::testing::Test {
         rc = s.engine->registerLocalMemory(s.addr, buffer_size, "cpu:0");
         EXPECT_EQ(rc, 0) << "registerLocalMemory failed";
 
-        // Open our own segment for loopback testing
-        s.segment_id = s.engine->openSegment(local_server_name_);
+        // Use actual RPC address (P2PHANDSHAKE picks a random port)
+        auto actual_addr = s.engine->getLocalIpAndPort();
+        s.segment_id = s.engine->openSegment(actual_addr);
         return s;
     }
 
@@ -159,6 +163,7 @@ class EFATransportTest : public ::testing::Test {
 // Test 1: Verify EFA transport can be installed
 TEST_F(EFATransportTest, InstallTransport) {
     auto engine = std::make_unique<TransferEngine>(false);
+    engine->getLocalTopology()->discover({});
     auto hp = parseHostNameWithPort(local_server_name_);
     int rc = engine->init(metadata_server_, local_server_name_, hp.first.c_str(),
                           hp.second);
