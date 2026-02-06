@@ -21,6 +21,7 @@
 #include <cstring>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 
 #include "config.h"
 
@@ -310,17 +311,31 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
     }
 
     // Process slices - using fi_write for RDMA write operations
+    // When WR depth or CQ capacity is full, wait for the CQ polling worker
+    // thread to drain completions before retrying, rather than immediately
+    // failing slices (which would cause vLLM KV transfer failures).
+    const int kMaxBackoffYields = 100000;
+
     for (auto it = slice_list.begin(); it != slice_list.end();) {
-        // Check WR depth and CQ capacity before posting to prevent overflow
-        if (wr_depth_ >= max_wr_depth_ ||
-            (cq_outstanding_ && *cq_outstanding_ >= (int)globalConfig().max_cqe)) {
-            // No room - move remaining slices to failed list since EFA
-            // transport has no retry mechanism
-            for (; it != slice_list.end(); ++it) {
-                failed_slice_list.push_back(*it);
+        // Wait for room in WR depth and CQ before posting
+        int backoff = 0;
+        while (wr_depth_ >= max_wr_depth_ ||
+               (cq_outstanding_ && *cq_outstanding_ >= (int)globalConfig().max_cqe)) {
+            if (++backoff > kMaxBackoffYields) {
+                // Give up after extended wait - fail remaining slices
+                LOG(WARNING) << "EFA submitPostSend: timed out waiting for CQ drain"
+                             << " (wr_depth=" << wr_depth_
+                             << ", max=" << max_wr_depth_
+                             << ", cq_outstanding="
+                             << (cq_outstanding_ ? *cq_outstanding_ : -1)
+                             << ", max_cqe=" << globalConfig().max_cqe << ")";
+                for (; it != slice_list.end(); ++it) {
+                    failed_slice_list.push_back(*it);
+                }
+                slice_list.clear();
+                return 0;
             }
-            slice_list.clear();
-            return 0;
+            std::this_thread::yield();
         }
 
         Transport::Slice *slice = *it;
@@ -358,12 +373,12 @@ int EfaEndPoint::submitPostSend(std::vector<Transport::Slice *> &slice_list,
             slice->status = Transport::Slice::PENDING;  // Still pending until CQ completion
             it = slice_list.erase(it);
         } else if (ret == -FI_EAGAIN) {
-            // Queue full - move remaining slices to failed list
+            // Provider queue full - yield and retry this slice
             delete op_ctx;
-            failed_slice_list.push_back(slice);
-            it = slice_list.erase(it);
+            std::this_thread::yield();
+            // Don't advance iterator - retry the same slice
         } else {
-            // Error
+            // Hard error
             LOG(ERROR) << "fi_write failed: " << fi_strerror(-ret)
                        << " (source=" << slice->source_addr
                        << ", len=" << slice->length
