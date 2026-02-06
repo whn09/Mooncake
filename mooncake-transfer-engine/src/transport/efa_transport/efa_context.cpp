@@ -501,27 +501,32 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
         // No completions available
         return 0;
     } else if (ret < 0) {
-        // Error - check for CQ error
+        // CQ error (typically -FI_EAVAIL) - drain all queued error entries
+        // before normal completions become accessible again.
+        int err_count = 0;
         struct fi_cq_err_entry err_entry;
-        ret = fi_cq_readerr(cq, &err_entry, 0);
-        if (ret > 0) {
+        std::unordered_map<volatile int *, int> wr_depth_set;
+        while ((ret = fi_cq_readerr(cq, &err_entry, 0)) > 0) {
             EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(err_entry.op_context);
             if (op_ctx && op_ctx->slice) {
                 LOG(ERROR) << "EFA CQ error: " << fi_cq_strerror(cq, err_entry.prov_errno,
                                                                   err_entry.err_data, nullptr, 0)
                            << " for slice at " << op_ctx->slice->source_addr;
                 op_ctx->slice->markFailed();
-                // Decrement wr_depth for the errored operation
                 if (op_ctx->wr_depth) {
-                    __sync_fetch_and_sub(op_ctx->wr_depth, 1);
+                    wr_depth_set[op_ctx->wr_depth]++;
                 }
                 delete op_ctx;
             }
-            // Decrement CQ outstanding for the error entry
-            __sync_fetch_and_sub(&cq_list_[cq_index]->outstanding, 1);
-            return 1;  // Processed one error entry
+            err_count++;
         }
-        return 0;
+        for (auto &entry : wr_depth_set) {
+            __sync_fetch_and_sub(entry.first, entry.second);
+        }
+        if (err_count > 0) {
+            __sync_fetch_and_sub(&cq_list_[cq_index]->outstanding, err_count);
+        }
+        return err_count;
     }
 
     return 0;
