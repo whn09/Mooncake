@@ -34,7 +34,8 @@
 namespace mooncake {
 
 // EfaEndpointStore implementation
-std::shared_ptr<EfaEndPoint> EfaEndpointStore::get(const std::string &peer_nic_path) {
+std::shared_ptr<EfaEndPoint> EfaEndpointStore::get(
+    const std::string &peer_nic_path) {
     RWSpinlock::ReadGuard guard(lock_);
     auto it = endpoints_.find(peer_nic_path);
     if (it != endpoints_.end()) {
@@ -44,7 +45,7 @@ std::shared_ptr<EfaEndPoint> EfaEndpointStore::get(const std::string &peer_nic_p
 }
 
 std::shared_ptr<EfaEndPoint> EfaEndpointStore::getOrInsert(
-        const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> new_ep) {
+    const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> new_ep) {
     RWSpinlock::WriteGuard guard(lock_);
     auto it = endpoints_.find(peer_nic_path);
     if (it != endpoints_.end()) {
@@ -54,7 +55,8 @@ std::shared_ptr<EfaEndPoint> EfaEndpointStore::getOrInsert(
     return new_ep;
 }
 
-void EfaEndpointStore::add(const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> endpoint) {
+void EfaEndpointStore::add(const std::string &peer_nic_path,
+                           std::shared_ptr<EfaEndPoint> endpoint) {
     RWSpinlock::WriteGuard guard(lock_);
     endpoints_[peer_nic_path] = endpoint;
 }
@@ -88,8 +90,7 @@ EfaContext::EfaContext(EfaTransport &engine, const std::string &device_name)
       fabric_(nullptr),
       domain_(nullptr),
       av_(nullptr),
-      active_(true) {
-}
+      active_(true) {}
 
 EfaContext::~EfaContext() {
     if (fabric_) deconstruct();
@@ -107,7 +108,8 @@ int EfaContext::construct(size_t num_cq_list, size_t num_comp_channels,
         return ERR_CONTEXT;
     }
 
-    hints_->caps = FI_MSG | FI_RMA | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE;
+    hints_->caps =
+        FI_MSG | FI_RMA | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE;
     hints_->mode = FI_CONTEXT;
     hints_->ep_attr->type = FI_EP_RDM;  // EFA uses RDM endpoints
     hints_->fabric_attr->prov_name = strdup("efa");
@@ -115,14 +117,16 @@ int EfaContext::construct(size_t num_cq_list, size_t num_comp_channels,
     // Specify the domain (device) name - append "-rdm" for RDM endpoint
     std::string domain_name = device_name_ + "-rdm";
     hints_->domain_attr->name = strdup(domain_name.c_str());
-    hints_->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
+    hints_->domain_attr->mr_mode =
+        FI_MR_LOCAL | FI_MR_VIRT_ADDR | FI_MR_ALLOCATED | FI_MR_PROV_KEY;
     hints_->domain_attr->threading = FI_THREAD_SAFE;
 
     // Get fabric info
-    int ret = fi_getinfo(FI_VERSION(1, 14), nullptr, nullptr, 0, hints_, &fi_info_);
+    int ret =
+        fi_getinfo(FI_VERSION(1, 14), nullptr, nullptr, 0, hints_, &fi_info_);
     if (ret) {
-        LOG(ERROR) << "fi_getinfo failed for device " << device_name_
-                   << ": " << fi_strerror(-ret);
+        LOG(ERROR) << "fi_getinfo failed for device " << device_name_ << ": "
+                   << fi_strerror(-ret);
         fi_freeinfo(hints_);
         hints_ = nullptr;
         return ERR_CONTEXT;
@@ -270,9 +274,11 @@ int EfaContext::registerMemoryRegionInternal(void *addr, size_t length,
     // For EFA, we need local read/write and remote read/write
     fi_access = FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE;
 
-    int ret = fi_mr_reg(domain_, addr, length, fi_access, 0, 0, 0, &mrMeta.mr, nullptr);
+    int ret = fi_mr_reg(domain_, addr, length, fi_access, 0, 0, 0, &mrMeta.mr,
+                        nullptr);
     if (ret) {
-        LOG(ERROR) << "fi_mr_reg failed for " << addr << ": " << fi_strerror(-ret);
+        LOG(ERROR) << "fi_mr_reg failed for " << addr << ": "
+                   << fi_strerror(-ret);
         return ERR_CONTEXT;
     }
 
@@ -299,8 +305,8 @@ int EfaContext::unregisterMemoryRegion(void *addr) {
         if (it->second.mr) {
             int ret = fi_close(&it->second.mr->fid);
             if (ret) {
-                LOG(ERROR) << "Failed to unregister memory " << addr
-                           << ": " << fi_strerror(-ret);
+                LOG(ERROR) << "Failed to unregister memory " << addr << ": "
+                           << fi_strerror(-ret);
                 return ERR_CONTEXT;
             }
         }
@@ -349,7 +355,8 @@ void *EfaContext::mrDesc(void *addr) {
     return nullptr;
 }
 
-std::shared_ptr<EfaEndPoint> EfaContext::endpoint(const std::string &peer_nic_path) {
+std::shared_ptr<EfaEndPoint> EfaContext::endpoint(
+    const std::string &peer_nic_path) {
     if (!endpoint_store_) return nullptr;
 
     // Fast path: endpoint already exists
@@ -402,26 +409,30 @@ std::string EfaContext::localAddr() const {
     }
 
     std::ostringstream oss;
-    const uint8_t *addr = static_cast<const uint8_t*>(fi_info_->src_addr);
+    const uint8_t *addr = static_cast<const uint8_t *>(fi_info_->src_addr);
     for (size_t i = 0; i < fi_info_->src_addrlen; ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0') << (int)addr[i];
     }
     return oss.str();
 }
 
-int EfaContext::submitPostSend(const std::vector<Transport::Slice *> &slice_list) {
+int EfaContext::submitPostSend(
+    const std::vector<Transport::Slice *> &slice_list) {
     // Route slices to appropriate endpoints for sending
     // Group slices by peer NIC path
-    std::unordered_map<std::string, std::vector<Transport::Slice *>> slices_by_peer;
+    std::unordered_map<std::string, std::vector<Transport::Slice *>>
+        slices_by_peer;
     std::vector<Transport::Slice *> failed_slices;
 
     for (auto *slice : slice_list) {
         if (!slice) continue;
 
         // Get peer segment descriptor to find dest_rkey and peer device info
-        auto peer_segment_desc = engine_.meta()->getSegmentDescByID(slice->target_id);
+        auto peer_segment_desc =
+            engine_.meta()->getSegmentDescByID(slice->target_id);
         if (!peer_segment_desc) {
-            LOG(ERROR) << "Cannot get segment descriptor for target " << slice->target_id;
+            LOG(ERROR) << "Cannot get segment descriptor for target "
+                       << slice->target_id;
             slice->markFailed();
             continue;
         }
@@ -431,13 +442,15 @@ int EfaContext::submitPostSend(const std::vector<Transport::Slice *> &slice_list
         if (EfaTransport::selectDevice(peer_segment_desc.get(),
                                        slice->rdma.dest_addr, slice->length,
                                        buffer_id, device_id)) {
-            LOG(ERROR) << "Cannot select device for dest_addr " << (void*)slice->rdma.dest_addr;
+            LOG(ERROR) << "Cannot select device for dest_addr "
+                       << (void *)slice->rdma.dest_addr;
             slice->markFailed();
             continue;
         }
 
         // Set the remote key from the peer's registered memory region
-        slice->rdma.dest_rkey = peer_segment_desc->buffers[buffer_id].rkey[device_id];
+        slice->rdma.dest_rkey =
+            peer_segment_desc->buffers[buffer_id].rkey[device_id];
 
         // Construct peer NIC path: "server_name@device_name"
         std::string peer_nic_path = peer_segment_desc->name + "@" +
@@ -493,7 +506,8 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
         // Process completions outside the lock (markSuccess / delete are safe)
         std::unordered_map<volatile int *, int> wr_depth_set;
         for (ssize_t i = 0; i < ret; i++) {
-            EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(entries[i].op_context);
+            EfaOpContext *op_ctx =
+                reinterpret_cast<EfaOpContext *>(entries[i].op_context);
             if (op_ctx && op_ctx->slice) {
                 op_ctx->slice->markSuccess();
                 if (op_ctx->wr_depth) {
@@ -517,10 +531,12 @@ int EfaContext::pollCq(int max_entries, int cq_index) {
         std::unordered_map<volatile int *, int> wr_depth_set;
 
         while ((ret = fi_cq_readerr(cq, &err_entry, 0)) > 0) {
-            EfaOpContext *op_ctx = reinterpret_cast<EfaOpContext*>(err_entry.op_context);
+            EfaOpContext *op_ctx =
+                reinterpret_cast<EfaOpContext *>(err_entry.op_context);
             if (op_ctx && op_ctx->slice) {
-                LOG(ERROR) << "EFA CQ error: " << fi_cq_strerror(cq, err_entry.prov_errno,
-                                                                  err_entry.err_data, nullptr, 0)
+                LOG(ERROR) << "EFA CQ error: "
+                           << fi_cq_strerror(cq, err_entry.prov_errno,
+                                             err_entry.err_data, nullptr, 0)
                            << " for slice at " << op_ctx->slice->source_addr;
                 op_ctx->slice->markFailed();
                 if (op_ctx->wr_depth) {

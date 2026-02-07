@@ -37,12 +37,13 @@ namespace mooncake {
 
 class EfaContext;
 
-// Custom context for libfabric operations - stores slice pointer for completion handling
-// This struct MUST have fi_context as its first member
+// Custom context for libfabric operations - stores slice pointer for completion
+// handling This struct MUST have fi_context as its first member
 struct EfaOpContext {
-    struct fi_context fi_ctx;   // Must be first member
-    Transport::Slice *slice;    // Slice pointer for completion handling
-    volatile int *wr_depth;     // Pointer to endpoint's wr_depth_ for CQ completion decrement
+    struct fi_context fi_ctx;  // Must be first member
+    Transport::Slice *slice;   // Slice pointer for completion handling
+    volatile int *wr_depth;    // Pointer to endpoint's wr_depth_ for CQ
+                               // completion decrement
 };
 
 // EfaEndPoint represents a libfabric endpoint for EFA communication.
@@ -58,9 +59,8 @@ class EfaEndPoint {
     ~EfaEndPoint();
 
     // Construct endpoint with specified completion queue
-    int construct(struct fid_cq *cq, size_t num_qp_list = 1,
-                  size_t max_sge = 4, size_t max_wr = 256,
-                  size_t max_inline = 64);
+    int construct(struct fid_cq *cq, size_t num_qp_list = 1, size_t max_sge = 4,
+                  size_t max_wr = 256, size_t max_inline = 64);
 
    private:
     int deconstruct();

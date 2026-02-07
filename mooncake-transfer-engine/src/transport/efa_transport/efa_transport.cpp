@@ -56,7 +56,8 @@ void EfaTransport::startWorkerThreads() {
     for (size_t i = 0; i < num_threads; i++) {
         worker_threads_.emplace_back(&EfaTransport::workerThreadFunc, this, i);
     }
-    LOG(INFO) << "EfaTransport: Started " << num_threads << " CQ polling worker threads";
+    LOG(INFO) << "EfaTransport: Started " << num_threads
+              << " CQ polling worker threads";
 }
 
 void EfaTransport::stopWorkerThreads() {
@@ -243,8 +244,9 @@ int EfaTransport::registerLocalMemoryInternal(void *addr, size_t length,
 
         for (size_t i = 0; i < ret_codes.size(); ++i) {
             if (ret_codes[i] != 0) {
-                LOG(ERROR) << "Failed to register memory region with EFA context "
-                           << i;
+                LOG(ERROR)
+                    << "Failed to register memory region with EFA context "
+                    << i;
                 return ret_codes[i];
             }
         }
@@ -253,8 +255,9 @@ int EfaTransport::registerLocalMemoryInternal(void *addr, size_t length,
             int ret = context_list_[i]->registerMemoryRegion(addr, length,
                                                              access_rights);
             if (ret) {
-                LOG(ERROR) << "Failed to register memory region with EFA context "
-                           << i;
+                LOG(ERROR)
+                    << "Failed to register memory region with EFA context "
+                    << i;
                 return ret;
             }
         }
@@ -332,8 +335,9 @@ int EfaTransport::unregisterLocalMemoryInternal(void *addr,
 
         for (size_t i = 0; i < ret_codes.size(); ++i) {
             if (ret_codes[i] != 0) {
-                LOG(ERROR) << "Failed to unregister memory region with EFA context "
-                           << i;
+                LOG(ERROR)
+                    << "Failed to unregister memory region with EFA context "
+                    << i;
                 return ret_codes[i];
             }
         }
@@ -341,8 +345,9 @@ int EfaTransport::unregisterLocalMemoryInternal(void *addr,
         for (size_t i = 0; i < context_list_.size(); ++i) {
             int ret = context_list_[i]->unregisterMemoryRegion(addr);
             if (ret) {
-                LOG(ERROR) << "Failed to unregister memory region with EFA context "
-                           << i;
+                LOG(ERROR)
+                    << "Failed to unregister memory region with EFA context "
+                    << i;
                 return ret;
             }
         }
@@ -510,16 +515,18 @@ Status EfaTransport::submitTransferTask(
                 auto source_addr = slice->source_addr;
                 for (auto &entry : slices_to_post)
                     for (auto s : entry.second) getSliceCache().deallocate(s);
-                LOG(ERROR)
-                    << "Memory region not registered by any active EFA device(s): "
-                    << source_addr;
+                LOG(ERROR) << "Memory region not registered by any active EFA "
+                              "device(s): "
+                           << source_addr;
                 return Status::AddressNotRegistered(
-                    "Memory region not registered by any active EFA device(s): " +
+                    "Memory region not registered by any active EFA "
+                    "device(s): " +
                     std::to_string(reinterpret_cast<uintptr_t>(source_addr)));
             } else {
                 auto &context = context_list_[device_id];
                 if (!context->active()) {
-                    LOG(ERROR) << "EFA Device " << device_id << " is not active";
+                    LOG(ERROR)
+                        << "EFA Device " << device_id << " is not active";
                     return Status::InvalidArgument("EFA Device " +
                                                    std::to_string(device_id) +
                                                    " is not active");
@@ -640,7 +647,8 @@ int EfaTransport::initializeEfaResources() {
     }
 
     if (efa_devices.empty()) {
-        LOG(WARNING) << "EfaTransport: No EFA devices found, falling back to all devices";
+        LOG(WARNING) << "EfaTransport: No EFA devices found, falling back to "
+                        "all devices";
         efa_devices = hca_list;
         non_efa_devices.clear();
     }

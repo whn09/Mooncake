@@ -463,9 +463,9 @@ static Transport *installTransportFromFlags(TransferEngine *engine) {
         // would auto-install RDMA transport. Manually discover instead.
         engine->getLocalTopology()->discover({});
         xport = engine->installTransport("efa", nullptr);
-    } else if (FLAGS_protocol == "tcp" ||
-               FLAGS_protocol == "nvlink" || FLAGS_protocol == "hip" ||
-               FLAGS_protocol == "nvlink_intra" || FLAGS_protocol == "ubshmem") {
+    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "nvlink" ||
+               FLAGS_protocol == "hip" || FLAGS_protocol == "nvlink_intra" ||
+               FLAGS_protocol == "ubshmem") {
         xport = engine->installTransport(FLAGS_protocol.c_str(), nullptr);
     } else {
         LOG(ERROR) << "Unsupported protocol: " << FLAGS_protocol;

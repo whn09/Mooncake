@@ -61,9 +61,10 @@ class EfaEndpointStore {
     std::shared_ptr<EfaEndPoint> get(const std::string &peer_nic_path);
     // Atomically get-or-insert: returns existing endpoint or inserts new_ep.
     // Prevents duplicate endpoint creation from concurrent callers.
-    std::shared_ptr<EfaEndPoint> getOrInsert(const std::string &peer_nic_path,
-                                              std::shared_ptr<EfaEndPoint> new_ep);
-    void add(const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> endpoint);
+    std::shared_ptr<EfaEndPoint> getOrInsert(
+        const std::string &peer_nic_path, std::shared_ptr<EfaEndPoint> new_ep);
+    void add(const std::string &peer_nic_path,
+             std::shared_ptr<EfaEndPoint> endpoint);
     void remove(const std::string &peer_nic_path);
     int disconnectAll();
     size_t size() const;
@@ -73,8 +74,8 @@ class EfaEndpointStore {
     std::unordered_map<std::string, std::shared_ptr<EfaEndPoint>> endpoints_;
 };
 
-// EfaContext represents the set of resources controlled by each local EFA device,
-// including Memory Region, CQ, EndPoint, etc. using libfabric
+// EfaContext represents the set of resources controlled by each local EFA
+// device, including Memory Region, CQ, EndPoint, etc. using libfabric
 class EfaContext {
    public:
     EfaContext(EfaTransport &engine, const std::string &device_name);

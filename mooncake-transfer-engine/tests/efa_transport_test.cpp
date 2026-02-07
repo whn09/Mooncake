@@ -31,9 +31,7 @@ static void *allocateMemoryPool(size_t size, int socket_id) {
     return numa_alloc_onnode(size, socket_id);
 }
 
-static void freeMemoryPool(void *addr, size_t size) {
-    numa_free(addr, size);
-}
+static void freeMemoryPool(void *addr, size_t size) { numa_free(addr, size); }
 
 // ---------------------------------------------------------------------------
 // EFA Transport Test Fixture
@@ -81,9 +79,8 @@ class EFATransportTest : public ::testing::Test {
         // (same pattern as the Python binding in transfer_engine_py.cpp)
         s.engine->getLocalTopology()->discover({});
         auto hp = parseHostNameWithPort(local_server_name_);
-        int rc =
-            s.engine->init(metadata_server_, local_server_name_, hp.first.c_str(),
-                           hp.second);
+        int rc = s.engine->init(metadata_server_, local_server_name_,
+                                hp.first.c_str(), hp.second);
         EXPECT_EQ(rc, 0) << "engine->init failed";
 
         s.xport = s.engine->installTransport("efa", nullptr);
@@ -165,12 +162,13 @@ TEST_F(EFATransportTest, InstallTransport) {
     auto engine = std::make_unique<TransferEngine>(false);
     engine->getLocalTopology()->discover({});
     auto hp = parseHostNameWithPort(local_server_name_);
-    int rc = engine->init(metadata_server_, local_server_name_, hp.first.c_str(),
-                          hp.second);
+    int rc = engine->init(metadata_server_, local_server_name_,
+                          hp.first.c_str(), hp.second);
     ASSERT_EQ(rc, 0);
 
     Transport *xport = engine->installTransport("efa", nullptr);
-    ASSERT_NE(xport, nullptr) << "EFA transport should be installable on EFA hardware";
+    ASSERT_NE(xport, nullptr)
+        << "EFA transport should be installable on EFA hardware";
 }
 
 // Test 2: Basic loopback write
@@ -187,9 +185,8 @@ TEST_F(EFATransportTest, LoopbackWrite) {
     // Fill source buffer with known data
     memset(setup.addr, 0xAB, kDataLength);
 
-    bool ok =
-        submitAndWait(setup.engine.get(), setup.segment_id, setup.addr,
-                      remote_base, kDataLength, TransferRequest::WRITE);
+    bool ok = submitAndWait(setup.engine.get(), setup.segment_id, setup.addr,
+                            remote_base, kDataLength, TransferRequest::WRITE);
     EXPECT_TRUE(ok) << "Loopback write should succeed";
 
     destroyEngine(setup);
@@ -216,9 +213,8 @@ TEST_F(EFATransportTest, WriteAndRead) {
     ASSERT_TRUE(ok) << "Write should succeed";
 
     // Read remote -> local (into second half of buffer)
-    ok = submitAndWait(setup.engine.get(), setup.segment_id,
-                       buf + kDataLength, remote_base, kDataLength,
-                       TransferRequest::READ);
+    ok = submitAndWait(setup.engine.get(), setup.segment_id, buf + kDataLength,
+                       remote_base, kDataLength, TransferRequest::READ);
     ASSERT_TRUE(ok) << "Read should succeed";
 
     // Verify data integrity
@@ -307,8 +303,8 @@ TEST_F(EFATransportTest, StressMultipleBatches) {
         }
 
         Status s = setup.engine->submitTransfer(batch_id, requests);
-        ASSERT_TRUE(s.ok()) << "Batch " << batch
-                            << " submitTransfer failed: " << s.ToString();
+        ASSERT_TRUE(s.ok())
+            << "Batch " << batch << " submitTransfer failed: " << s.ToString();
 
         // Wait for all tasks in batch
         for (int task_id = 0; task_id < kBatchSize; ++task_id) {
