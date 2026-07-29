@@ -89,6 +89,11 @@ struct GlobalConfig {
     bool log_rdma_slice_affinity = false;
     bool track_rdma_posted_slices = false;
     int parallel_reg_mr = -1;
+    // Cap on concurrent buffer registrations in registerLocalMemoryBatch().
+    // 0 = use the built-in default (8). Deliberately not core-scaled: see the
+    // measured cap table in efa_transport.cpp for why more threads are slower.
+    // Override via MC_MAX_CONCURRENT_REG_MR.
+    size_t max_concurrent_reg_mr = 0;
     size_t eic_max_block_size = 64UL * 1024 * 1024;
     EndpointStoreType endpoint_store_type = EndpointStoreType::SIEVE;
     int ib_traffic_class = -1;

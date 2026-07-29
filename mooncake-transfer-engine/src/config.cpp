@@ -538,6 +538,17 @@ void loadGlobalConfig(GlobalConfig& config) {
         }
     }
 
+    const char* max_concurrent_reg_mr = std::getenv("MC_MAX_CONCURRENT_REG_MR");
+    if (max_concurrent_reg_mr) {
+        long val = atol(max_concurrent_reg_mr);
+        if (val >= 0) {
+            config.max_concurrent_reg_mr = (size_t)val;
+        } else {
+            LOG(WARNING) << "Ignore value from environment variable "
+                            "MC_MAX_CONCURRENT_REG_MR";
+        }
+    }
+
     const char* endpoint_store_type_env = std::getenv("MC_ENDPOINT_STORE_TYPE");
     if (endpoint_store_type_env) {
         if (strcmp(endpoint_store_type_env, "FIFO") == 0) {
