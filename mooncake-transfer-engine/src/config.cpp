@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dirent.h>
+#include <strings.h>  // strcasecmp
 #include <unistd.h>
 
 namespace mooncake {
@@ -324,6 +325,21 @@ void loadGlobalConfig(GlobalConfig& config) {
         config.enable_dest_device_affinity = true;
     }
 
+    const char* efa_homogeneous_peers_env =
+        std::getenv("MC_EFA_HOMOGENEOUS_PEERS");
+    if (efa_homogeneous_peers_env) {
+        if (strcmp(efa_homogeneous_peers_env, "1") == 0 ||
+            strcasecmp(efa_homogeneous_peers_env, "true") == 0)
+            config.efa_homogeneous_peers = true;
+        else if (strcmp(efa_homogeneous_peers_env, "0") == 0 ||
+                 strcasecmp(efa_homogeneous_peers_env, "false") == 0)
+            config.efa_homogeneous_peers = false;
+        else
+            LOG(WARNING) << "Ignore value from environment variable "
+                            "MC_EFA_HOMOGENEOUS_PEERS, it should be "
+                            "0|1|true|false";
+    }
+
     const char* enable_parallel_reg_mr =
         std::getenv("MC_ENABLE_PARALLEL_REG_MR");
     if (enable_parallel_reg_mr) {
@@ -426,6 +442,7 @@ void dumpGlobalConfig() {
     LOG(INFO) << "max_inline = " << config.max_inline;
     LOG(INFO) << "mtu_length = " << mtuLengthToString(config.mtu_length);
     LOG(INFO) << "parallel_reg_mr = " << config.parallel_reg_mr;
+    LOG(INFO) << "efa_homogeneous_peers = " << config.efa_homogeneous_peers;
     LOG(INFO) << "ib_traffic_class = " << config.ib_traffic_class;
 }
 

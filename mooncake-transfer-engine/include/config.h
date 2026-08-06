@@ -54,6 +54,14 @@ struct GlobalConfig {
     int log_level = google::INFO;
     bool trace = false;
     int64_t slice_timeout = -1;
+    // Tell the EFA provider that every peer runs our platform, build, and
+    // capabilities, which lets it skip the per-peer RDM handshake. That
+    // handshake is what limits the first transfers to a new peer to 16 queued
+    // ops before returning FI_EAGAIN, endpoint-wide rather than per-peer.
+    // Defaults on: a Mooncake cluster is homogeneous by construction. Set
+    // MC_EFA_HOMOGENEOUS_PEERS=0 for a fleet mixing EFA generations or
+    // Mooncake builds. See buildSharedEndpoint() for the full rationale.
+    bool efa_homogeneous_peers = true;
     uint16_t rpc_min_port = 15000;
     uint16_t rpc_max_port = 17000;
     bool use_ipv6 = false;
