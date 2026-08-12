@@ -101,7 +101,12 @@ void EfaTransport::startWorkerThreads() {
 
     worker_running_ = true;
     // MC_EFA_CQ_THREADS caps CQ poller count (default 1). Set 0 to disable cap.
-    size_t num_threads = context_list_.size();
+    // One per device with CQs to poll: the inactive index placeholders in
+    // context_list_ have none, and workerThreadFunc's stride still covers the
+    // whole list when there are fewer threads than entries.
+    size_t num_threads = 0;
+    for (auto& context : context_list_)
+        if (context && context->active()) ++num_threads;
     int cq_cap = Environ::Get().GetEfaCqThreads();
     if (cq_cap > 0 && static_cast<size_t>(cq_cap) < num_threads) {
         num_threads = static_cast<size_t>(cq_cap);
@@ -309,7 +314,21 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
     // Strategy: if total PTE usage per NIC fits within the PTE budget,
     // register ALL chunks on ALL NICs (full coverage → max throughput).
     // Otherwise fall back to disjoint per-NIC partition.
-    size_t num_nics = context_list_.size();
+    //
+    // Assignments name context_list_ indices, and context_list_ holds an
+    // inactive placeholder for every HCA this transport does not drive (see
+    // initializeEfaResources), so spread over the active ones only: a
+    // placeholder has no domain to register against.
+    std::vector<size_t> active_nics;
+    active_nics.reserve(context_list_.size());
+    for (size_t i = 0; i < context_list_.size(); ++i)
+        if (context_list_[i] && context_list_[i]->active())
+            active_nics.push_back(i);
+    size_t num_nics = active_nics.size();
+    if (num_nics == 0) {
+        LOG(ERROR) << "EfaTransport: no active EFA device to register on";
+        return ERR_DEVICE_NOT_FOUND;
+    }
     size_t num_chunks = chunks.size();
     size_t total_pages_per_nic = length / page_size;
     bool use_full_coverage = (total_pages_per_nic <= getMaxPteEntries());
@@ -346,9 +365,7 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
         }
     } else if (chunks.size() <= 1) {
         // Single chunk: all NICs
-        for (size_t n = 0; n < num_nics; ++n) {
-            nic_assignments[0].push_back(n);
-        }
+        nic_assignments[0] = active_nics;
     } else if (use_full_coverage) {
         // Multi-chunk, PTE budget OK: every chunk on every NIC
         LOG(WARNING) << "Full NIC coverage: " << num_chunks << " chunks × "
@@ -356,9 +373,7 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
                      << " NICs (total PTE/NIC=" << total_pages_per_nic
                      << ", budget=" << getMaxPteEntries() << ")";
         for (size_t ci = 0; ci < num_chunks; ++ci) {
-            for (size_t n = 0; n < num_nics; ++n) {
-                nic_assignments[ci].push_back(n);
-            }
+            nic_assignments[ci] = active_nics;
         }
     } else if (num_chunks <= num_nics) {
         // Multi-chunk, PTE exceeded, more NICs than chunks: disjoint partition
@@ -368,7 +383,7 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
             size_t start = ci * nics_per + std::min(ci, extra);
             size_t count = nics_per + (ci < extra ? 1 : 0);
             for (size_t n = start; n < start + count; ++n) {
-                nic_assignments[ci].push_back(n);
+                nic_assignments[ci].push_back(active_nics[n]);
             }
         }
         LOG(WARNING) << "Disjoint NIC partition: PTE/NIC="
@@ -391,7 +406,7 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
             size_t nic = ci % num_nics;
             size_t chunk_pages = chunks[ci].second / page_size;
             pages_per_nic[nic] += chunk_pages;
-            nic_assignments[ci].push_back(nic);
+            nic_assignments[ci].push_back(active_nics[nic]);
         }
         bool pte_ok = true;
         for (size_t n = 0; n < num_nics; ++n) {
@@ -513,8 +528,7 @@ int EfaTransport::registerLocalMemoryInternal(void* addr, size_t length,
             LOG(INFO) << "EFA registerMemoryRegion: chunk " << ci << "/"
                       << chunks.size() << ", addr=" << chunk_addr
                       << ", length=" << chunk_len
-                      << ", nics=" << assigned_nics.size() << "/"
-                      << context_list_.size()
+                      << ", nics=" << assigned_nics.size() << "/" << num_nics
                       << ", parallel=" << (use_parallel_reg ? "true" : "false")
                       << ", duration=" << reg_duration_ms << "ms";
         }
@@ -650,6 +664,13 @@ int EfaTransport::allocateLocalSegmentID() {
         device_desc.name = entry->deviceName();
         device_desc.lid = entry->lid();
         device_desc.gid = entry->gid();
+        // Inactive slots exist only to keep the HCA index space contiguous
+        // (see initializeEfaResources) and have no fabric address, but
+        // decodeSegmentDesc() drops a whole descriptor that carries an empty
+        // gid, so publish a sentinel.  A peer can never route to one: it is
+        // disabled in the topology published alongside this list, and every
+        // rkey we emit for it is 0.
+        if (!entry->active() && device_desc.gid.empty()) device_desc.gid = "0";
         desc->devices.push_back(device_desc);
     }
     desc->topology = *(local_topology_.get());
@@ -755,9 +776,9 @@ EfaTransport::buildLocalNicMap(const TopologyMatrix& matrix,
         std::vector<size_t> indices;
         for (const auto& hca : entry.second.preferred_hca) {
             auto it = name_to_index.find(hca);
-            // A preferred HCA can be missing here: non-EFA devices are filtered
-            // out of context_list_, and an EFA device whose construct() failed
-            // was dropped. Skipping it leaves the rest of the set usable.
+            // A preferred HCA can be missing here when the caller passes only
+            // the devices it drives. Skipping it leaves the rest of the set
+            // usable.
             if (it != name_to_index.end()) indices.push_back(it->second);
         }
         // No entry at all rather than an empty one, so the caller's lookup miss
@@ -812,6 +833,15 @@ int EfaTransport::unregisterLocalMemoryBatch(
     return first_error ? first_error : metadata_ret;
 }
 
+// A published device carrying the "0" gid sentinel is one of the index
+// placeholders described in allocateLocalSegmentID(), not a NIC the peer can
+// serve traffic on. It is unreachable by construction (its rkeys are all 0 and
+// it is disabled in the published topology), so warmup must not handshake
+// against it -- doing so would fail every time and inflate the pair count.
+static bool isPlaceholderDevice(const TransferMetadata::DeviceDesc& device) {
+    return device.gid.empty() || device.gid == "0";
+}
+
 int EfaTransport::warmupSegment(const std::string& segment_name) {
     if (!metadata_) {
         LOG(ERROR) << "EfaTransport::warmupSegment: metadata_ is null";
@@ -834,22 +864,36 @@ int EfaTransport::warmupSegment(const std::string& segment_name) {
         return 0;
     }
 
-    // Build peer_nic_path list: "<segment_name>@<device_name>" for each NIC.
+    // Build peer_nic_path list: "<segment_name>@<device_name>" for each NIC the
+    // peer can actually serve on.
     std::vector<std::string> peer_paths;
     peer_paths.reserve(desc->devices.size());
     for (const auto& dev : desc->devices) {
+        if (isPlaceholderDevice(dev)) continue;
         peer_paths.emplace_back(segment_name + "@" + dev.name);
     }
+    if (peer_paths.empty()) {
+        LOG(WARNING) << "EfaTransport::warmupSegment: segment '" << segment_name
+                     << "' publishes no reachable device";
+        return 0;
+    }
+
+    // Likewise skip our own inactive slots: they exist to keep the HCA index
+    // space contiguous and have no domain to open an endpoint on.
+    std::vector<std::shared_ptr<EfaContext>> local_contexts;
+    local_contexts.reserve(context_list_.size());
+    for (auto& ctx : context_list_)
+        if (ctx && ctx->active()) local_contexts.push_back(ctx);
 
     auto t0 = std::chrono::steady_clock::now();
-    size_t n_pairs = context_list_.size() * peer_paths.size();
+    size_t n_pairs = local_contexts.size() * peer_paths.size();
 
     // Idempotent short-circuit: if every (local_ctx, peer_nic) pair already
     // has a connected endpoint, skip the whole async dispatch. Matters for
     // callers that invoke warmupSegment per request loop — without this the
     // 256-thread fan-out runs every time even though there is no work to do.
     size_t already_ready = 0;
-    for (auto& ctx : context_list_) {
+    for (auto& ctx : local_contexts) {
         for (const auto& path : peer_paths) {
             auto ep = ctx->peekEndpoint(path);
             if (ep && ep->connected()) ++already_ready;
@@ -869,7 +913,7 @@ int EfaTransport::warmupSegment(const std::string& segment_name) {
     // concurrency, but total wall time is typically ms-level.
     std::vector<std::future<int>> futs;
     futs.reserve(n_pairs);
-    for (auto& ctx : context_list_) {
+    for (auto& ctx : local_contexts) {
         for (const auto& path : peer_paths) {
             futs.emplace_back(
                 std::async(std::launch::async, [ctx, path]() -> int {
@@ -906,7 +950,7 @@ int EfaTransport::warmupSegment(const std::string& segment_name) {
             .count();
     LOG(INFO) << "EfaTransport::warmupSegment('" << segment_name << "'): " << ok
               << "/" << n_pairs << " endpoints connected (" << fail
-              << " failed) in " << elapsed << "s (" << context_list_.size()
+              << " failed) in " << elapsed << "s (" << local_contexts.size()
               << " local NICs × " << peer_paths.size() << " peer NICs)";
     return fail == 0 ? 0 : ERR_ENDPOINT;
 }
@@ -960,6 +1004,19 @@ Status EfaTransport::submitTransferTask(
         if (selectDevice(local_segment_desc.get(), (uint64_t)request.source,
                          request.length, request_buffer_id,
                          request_device_id)) {
+            request_buffer_id = -1;
+            request_device_id = -1;
+        }
+
+        // Bound device_id before indexing context_list_.  selectDevice()
+        // returns an index into the HCA space and only validates it against
+        // buffer.rkey; the retry path below checks context_list_ as well, and
+        // this one has to do the same or a descriptor that carries more keys
+        // than we have contexts reads past the end.  Falling through to the
+        // retry path is the right recovery: it re-selects with the bound
+        // applied.
+        if (request_device_id >= 0 &&
+            static_cast<size_t>(request_device_id) >= context_list_.size()) {
             request_buffer_id = -1;
             request_device_id = -1;
         }
@@ -1122,12 +1179,13 @@ int EfaTransport::onSetupEfaConnections(const HandShakeDesc& peer_desc,
     auto local_nic_name = getNicNameFromNicPath(peer_desc.peer_nic_path);
     if (local_nic_name.empty()) return ERR_INVALID_ARGUMENT;
 
-    // Find context by device name instead of using hca_list index, since
-    // context_list_ only contains EFA devices and may have different
-    // indexing than the full hca_list.
+    // Look the context up by device name rather than by HCA index: the peer
+    // names the NIC it wants, and only the devices this transport actually
+    // drives can serve a connection (the rest are inactive placeholders that
+    // keep the index space contiguous, see initializeEfaResources).
     std::shared_ptr<EfaContext> context;
     for (auto& entry : context_list_) {
-        if (entry->deviceName() == local_nic_name) {
+        if (entry && entry->active() && entry->deviceName() == local_nic_name) {
             context = entry;
             break;
         }
@@ -1161,31 +1219,53 @@ int EfaTransport::initializeEfaResources() {
         non_efa_devices.clear();
     }
 
-    // Disable non-EFA devices (e.g. ibp* IB devices) in the topology so that
-    // topology device indices stay aligned with context_list_ indices.
-    // Without this, selectDevice() can return an index from the full topology
-    // (which includes non-EFA devices), causing out-of-bounds access on
-    // context_list_ which only contains EFA devices.
-    for (auto& device_name : non_efa_devices) {
-        local_topology_->disableDevice(device_name);
-        LOG(INFO) << "EfaTransport: Disabled non-EFA device " << device_name
-                  << " in topology";
-    }
+    // context_list_ has to stay index-aligned with getHcaList(): the HCA index
+    // Topology::selectDevice() returns subscripts context_list_,
+    // SegmentDesc::devices and BufferDesc::lkey/rkey alike, and
+    // Topology::disableDevice() deliberately leaves those indices in place
+    // rather than compacting them (RDMA-side arrays are stored by index too).
+    // So every entry in hca_list gets a slot here, including the devices EFA
+    // cannot drive -- dropping one shifts every later index, which makes
+    // device_id name the wrong NIC or run off the end of context_list_.
+    // Same placeholder scheme as RdmaTransport::initializeRdmaResources().
+    auto push_placeholder = [this](const std::string& device_name) {
+        auto placeholder = std::make_shared<EfaContext>(*this, device_name);
+        placeholder->set_active(false);
+        context_list_.push_back(std::move(placeholder));
+    };
 
-    for (auto& device_name : efa_devices) {
+    const bool drive_every_device = non_efa_devices.empty();
+    size_t active_device_count = 0;
+    for (auto& device_name : hca_list) {
+        const bool is_efa = drive_every_device ||
+                            device_name.find("rdmap") != std::string::npos ||
+                            device_name.find("efa") != std::string::npos;
+        if (!is_efa) {
+            // Off the routing tables (matrix_ and resolved_matrix_ both), but
+            // its slot stays so the surviving indices do not move.
+            local_topology_->disableDevice(device_name);
+            push_placeholder(device_name);
+            LOG(INFO) << "EfaTransport: Disabled non-EFA device " << device_name
+                      << " in topology (HCA index " << context_list_.size() - 1
+                      << " kept as an inactive slot)";
+            continue;
+        }
+
         auto context = std::make_shared<EfaContext>(*this, device_name);
         auto& config = globalConfig();
         int ret = context->construct(config.num_cq_per_ctx, config.max_cqe,
                                      config.max_ep_per_ctx);
         if (ret) {
             local_topology_->disableDevice(device_name);
+            push_placeholder(device_name);
             LOG(WARNING) << "EfaTransport: Disable device " << device_name;
         } else {
             context_list_.push_back(context);
+            ++active_device_count;
             LOG(INFO) << "EfaTransport: Initialized EFA device " << device_name;
         }
     }
-    if (context_list_.empty()) {
+    if (active_device_count == 0) {
         LOG(ERROR) << "EfaTransport: No available EFA devices";
         return ERR_DEVICE_NOT_FOUND;
     }
