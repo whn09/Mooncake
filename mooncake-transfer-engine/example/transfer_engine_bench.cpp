@@ -843,7 +843,10 @@ Status initiatorWorker(TransferEngine* engine, SegmentID segment_id,
         }
 
         s = engine->freeBatchID(batch_id);
-        LOG_ASSERT(s.ok());
+        // BatchCleanupDeferred also invalidates batch_id (see
+        // TransferEngine::freeBatchID): a completion callback was still
+        // unwinding, which is routine on EFA.
+        LOG_ASSERT(s.ok() || s.IsBatchCleanupDeferred()) << s.ToString();
         batch_count++;
     }
     LOG(INFO) << "Worker " << thread_id << " stopped!";
